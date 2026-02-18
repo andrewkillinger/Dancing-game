@@ -96,6 +96,7 @@ export class GameEngine {
   private animFrameId = 0;
   private lastPhysicsTime = 0;
   private readonly PHYSICS_STEP = 1000 / 60; // fixed 16.67ms
+  private boundHandleResize!: () => void;
 
   async init(container: HTMLElement, state: GameState): Promise<void> {
     this._state = state;
@@ -135,7 +136,8 @@ export class GameEngine {
     Matter.World.add(this.world, [ground]);
 
     // Handle resize
-    window.addEventListener('resize', this.handleResize.bind(this));
+    this.boundHandleResize = this.handleResize.bind(this);
+    window.addEventListener('resize', this.boundHandleResize);
 
     this.lastPhysicsTime = performance.now();
   }
@@ -191,7 +193,7 @@ export class GameEngine {
 
   destroy(): void {
     this.stop();
-    window.removeEventListener('resize', this.handleResize.bind(this));
+    window.removeEventListener('resize', this.boundHandleResize);
     Matter.Engine.clear(this.physicsEngine);
     this.app.destroy(true);
   }
