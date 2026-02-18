@@ -37,7 +37,7 @@ describe('Daily Challenge Generation', () => {
   it('has valid condition types', () => {
     const challenge = generateDailyChallenge('2024-03-15');
     for (const cond of challenge.conditions) {
-      expect(['drop_object', 'dance_move', 'combo', 'score']).toContain(cond.type);
+      expect(['hit_streak', 'dance_move', 'combo', 'score']).toContain(cond.type);
     }
   });
 
@@ -50,14 +50,23 @@ describe('Daily Challenge Generation', () => {
     }
   });
 
-  it('drop count is between 3 and 7', () => {
+  it('always includes a hit_streak condition', () => {
+    const dates = ['2024-01-01', '2024-06-15', '2024-12-31'];
+    for (const date of dates) {
+      const challenge = generateDailyChallenge(date);
+      const hasStreak = challenge.conditions.some(c => c.type === 'hit_streak');
+      expect(hasStreak).toBe(true);
+    }
+  });
+
+  it('streak count is between 5 and 12', () => {
     const dates = Array.from({ length: 20 }, (_, i) => `2024-01-${String(i + 1).padStart(2, '0')}`);
     for (const date of dates) {
       const challenge = generateDailyChallenge(date);
-      const dropCond = challenge.conditions.find(c => c.type === 'drop_object');
-      if (dropCond?.count !== undefined) {
-        expect(dropCond.count).toBeGreaterThanOrEqual(3);
-        expect(dropCond.count).toBeLessThanOrEqual(7);
+      const streakCond = challenge.conditions.find(c => c.type === 'hit_streak');
+      if (streakCond?.count !== undefined) {
+        expect(streakCond.count).toBeGreaterThanOrEqual(5);
+        expect(streakCond.count).toBeLessThanOrEqual(12);
       }
     }
   });
@@ -68,13 +77,13 @@ describe('Daily Challenge Generation', () => {
   });
 
   it('reward points scale with difficulty', () => {
-    // Reward = 500 + count * 100, count = 3..7
-    // So reward should be 800..1200
+    // Reward = 500 + streakCount * 100, streakCount = 5..12
+    // So reward should be 1000..1700
     const dates = Array.from({ length: 10 }, (_, i) => `2024-0${(i % 9) + 1}-01`);
     for (const date of dates) {
       const challenge = generateDailyChallenge(date);
-      expect(challenge.rewardPoints).toBeGreaterThanOrEqual(800);
-      expect(challenge.rewardPoints).toBeLessThanOrEqual(1200);
+      expect(challenge.rewardPoints).toBeGreaterThanOrEqual(1000);
+      expect(challenge.rewardPoints).toBeLessThanOrEqual(1700);
     }
   });
 });
@@ -84,48 +93,46 @@ describe('Challenge Progress Tracking', () => {
     const challenge = generateDailyChallenge('2024-05-10');
     const progress = createChallengeProgress(challenge);
     expect(progress.completed).toBe(false);
-    expect(progress.dropsWhileDancing).toBe(0);
+    expect(progress.bestStreak).toBe(0);
+    expect(progress.consecutivePerfects).toBe(0);
     expect(progress.scoreReached).toBe(false);
   });
 
-  it('tracks drops while dancing correct move', () => {
+  it('tracks perfect streak', () => {
     const challenge = generateDailyChallenge('2024-05-10');
     const progress = createChallengeProgress(challenge);
     const score = createScoreState();
 
-    const dropCond = challenge.conditions.find(c => c.type === 'drop_object');
-    if (!dropCond || !dropCond.objectType || !dropCond.whileDancing) return;
-
-    // Drop the right object while doing the right dance
-    updateChallengeProgress(progress, score, dropCond.whileDancing, dropCond.objectType);
-    expect(progress.dropsWhileDancing).toBe(1);
+    updateChallengeProgress(progress, score, 'perfect');
+    updateChallengeProgress(progress, score, 'perfect');
+    updateChallengeProgress(progress, score, 'perfect');
+    expect(progress.consecutivePerfects).toBe(3);
+    expect(progress.bestStreak).toBe(3);
   });
 
-  it('does not count drops with wrong move', () => {
+  it('resets streak on miss', () => {
     const challenge = generateDailyChallenge('2024-05-10');
     const progress = createChallengeProgress(challenge);
     const score = createScoreState();
 
-    const dropCond = challenge.conditions.find(c => c.type === 'drop_object');
-    if (!dropCond || !dropCond.objectType) return;
+    updateChallengeProgress(progress, score, 'perfect');
+    updateChallengeProgress(progress, score, 'perfect');
+    expect(progress.bestStreak).toBe(2);
 
-    // Drop while idle (wrong move)
-    updateChallengeProgress(progress, score, 'idle', dropCond.objectType);
-    expect(progress.dropsWhileDancing).toBe(0);
+    updateChallengeProgress(progress, score, 'miss');
+    expect(progress.consecutivePerfects).toBe(0);
+    expect(progress.bestStreak).toBe(2); // best streak preserved
   });
 
-  it('does not count wrong object type', () => {
+  it('resets streak on good hit', () => {
     const challenge = generateDailyChallenge('2024-05-10');
     const progress = createChallengeProgress(challenge);
     const score = createScoreState();
 
-    const dropCond = challenge.conditions.find(c => c.type === 'drop_object');
-    if (!dropCond || !dropCond.whileDancing) return;
-
-    // Drop wrong object type while doing correct dance
-    const wrongType = dropCond.objectType === 'duck' ? 'anvil' : 'duck';
-    updateChallengeProgress(progress, score, dropCond.whileDancing, wrongType);
-    expect(progress.dropsWhileDancing).toBe(0);
+    updateChallengeProgress(progress, score, 'perfect');
+    updateChallengeProgress(progress, score, 'good');
+    expect(progress.consecutivePerfects).toBe(0);
+    expect(progress.bestStreak).toBe(1);
   });
 
   it('marks score reached when target hit', () => {
@@ -137,7 +144,7 @@ describe('Challenge Progress Tracking', () => {
     if (!scoreCond?.targetScore) return;
 
     score.totalScore = scoreCond.targetScore;
-    updateChallengeProgress(progress, score, 'wiggle');
+    updateChallengeProgress(progress, score, 'perfect');
     expect(progress.scoreReached).toBe(true);
   });
 
@@ -146,15 +153,14 @@ describe('Challenge Progress Tracking', () => {
     const progress = createChallengeProgress(challenge);
     const score = createScoreState();
 
-    const dropCond = challenge.conditions.find(c => c.type === 'drop_object');
-    if (!dropCond?.objectType || !dropCond.whileDancing) return;
+    const streakCond = challenge.conditions.find(c => c.type === 'hit_streak');
+    if (!streakCond?.count) return;
 
-    // Only drop condition, not score
-    for (let i = 0; i < (dropCond.count ?? 1); i++) {
-      updateChallengeProgress(progress, score, dropCond.whileDancing, dropCond.objectType);
+    // Build streak but don't meet score condition
+    for (let i = 0; i < (streakCond.count ?? 1); i++) {
+      updateChallengeProgress(progress, score, 'perfect');
     }
 
-    // Score not reached yet - should not be complete
     const scoreCond = challenge.conditions.find(c => c.type === 'score');
     if (scoreCond) {
       expect(progress.completed).toBe(false);
@@ -166,17 +172,17 @@ describe('Challenge Progress Tracking', () => {
     const progress = createChallengeProgress(challenge);
     const score = createScoreState();
 
-    const dropCond = challenge.conditions.find(c => c.type === 'drop_object');
+    const streakCond = challenge.conditions.find(c => c.type === 'hit_streak');
     const scoreCond = challenge.conditions.find(c => c.type === 'score');
 
-    if (!dropCond?.objectType || !dropCond.whileDancing || !scoreCond?.targetScore) return;
+    if (!streakCond?.count || !scoreCond?.targetScore) return;
 
     // Meet score condition
     score.totalScore = scoreCond.targetScore;
 
-    // Meet drop condition
-    for (let i = 0; i < (dropCond.count ?? 1); i++) {
-      updateChallengeProgress(progress, score, dropCond.whileDancing, dropCond.objectType);
+    // Meet streak condition
+    for (let i = 0; i < streakCond.count; i++) {
+      updateChallengeProgress(progress, score, 'perfect');
     }
 
     expect(progress.completed).toBe(true);
@@ -188,13 +194,9 @@ describe('Challenge Progress Tracking', () => {
     const score = createScoreState();
 
     progress.completed = true;
-    const prevDrops = progress.dropsWhileDancing;
+    const prevStreak = progress.bestStreak;
 
-    const dropCond = challenge.conditions.find(c => c.type === 'drop_object');
-    if (dropCond?.objectType && dropCond.whileDancing) {
-      updateChallengeProgress(progress, score, dropCond.whileDancing, dropCond.objectType);
-    }
-
-    expect(progress.dropsWhileDancing).toBe(prevDrops);
+    updateChallengeProgress(progress, score, 'perfect');
+    expect(progress.bestStreak).toBe(prevStreak);
   });
 });

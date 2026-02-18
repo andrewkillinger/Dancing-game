@@ -1,32 +1,28 @@
 import * as PIXI from 'pixi.js';
-import Matter from 'matter-js';
-import { GameState, GameScreen, DanceMoveId, DANCE_MOVES, PhysicsObjectType, PHYSICS_OBJECTS } from '@/types';
+import { GameState, GameScreen } from '@/types';
 import { btn, haptic, el, formatScore } from '@/ui/components/button';
 import { GameEngine } from '@/game/engine';
 import { Character } from '@/game/character';
-import { ObjectManager, MAX_OBJECTS } from '@/game/objects';
+import { RhythmEngine } from '@/game/rhythm';
+import { CrowdManager } from '@/game/crowd';
 import {
   createScoreState,
   tickScore,
-  registerCollision,
-  registerDanceMove,
+  registerRhythmHit,
+  calculateSessionBonus,
   generateDailyChallenge,
   getTodayDateStr,
   createChallengeProgress,
   updateChallengeProgress,
   ChallengeProgress,
+  RhythmHitResult,
 } from '@/game/scoring';
 import { soundSystem } from '@/game/sounds';
 import { dataService } from '@/services/supabase/data';
 
-// ─── Screen shake ─────────────────────────────────────────────────────────────
-
-let shakeIntensity = 0;
-function triggerShake(intensity: number): void {
-  shakeIntensity = Math.max(shakeIntensity, intensity);
-}
-
 // ─── Dance Screen ─────────────────────────────────────────────────────────────
+
+const BPM = 120;
 
 export function createDanceScreen(
   state: GameState,
@@ -45,19 +41,21 @@ export function createDanceScreen(
   });
 
   // ── Game setup ─────────────────────────────────────────────────────────────
-  const { app, world } = gameEngine;
+  const { app } = gameEngine;
   const W = gameEngine.width;
   const H = gameEngine.height;
 
   // Stage layers
   const bgLayer = new PIXI.Container();
-  const objectLayer = new PIXI.Container();
+  const crowdLayer = new PIXI.Container();
   const characterLayer = new PIXI.Container();
+  const rhythmLayer = new PIXI.Container();
   const fxLayer = new PIXI.Container();
 
   app.stage.addChild(bgLayer);
-  app.stage.addChild(objectLayer);
+  app.stage.addChild(crowdLayer);
   app.stage.addChild(characterLayer);
+  app.stage.addChild(rhythmLayer);
   app.stage.addChild(fxLayer);
 
   // Background
@@ -72,9 +70,11 @@ export function createDanceScreen(
   character.container.position.set(charX, charY);
   characterLayer.addChild(character.container);
 
-  // Object manager
-  const objectMgr = new ObjectManager(world, objectLayer);
-  objectMgr.setCharacterPosition(charX, charY);
+  // Rhythm engine
+  const rhythmEngine = new RhythmEngine(rhythmLayer, W, H, BPM);
+
+  // Crowd manager
+  const crowdMgr = new CrowdManager(crowdLayer, W, H);
 
   // Score state
   state.currentScore = createScoreState();
@@ -89,14 +89,9 @@ export function createDanceScreen(
   dataService.getChallengeCompletion(state.profile.id, today).then(done => {
     if (!done) {
       challengeProgress = createChallengeProgress(challenge);
-      updateChallengeUI();
-    } else {
-      updateChallengeUI();
     }
+    updateChallengeUI();
   });
-
-  // Collision detection zone (character body roughly)
-  const charHitR = 70;
 
   // ── Score HUD ──────────────────────────────────────────────────────────────
   const hud = el('div', {}, {
@@ -107,9 +102,7 @@ export function createDanceScreen(
     alignItems: 'flex-start',
   });
 
-  const scoreEl = el('div', {}, {
-    textAlign: 'center',
-  });
+  const scoreEl = el('div', {}, { textAlign: 'center' });
   const scoreNum = el('div', { textContent: '0' }, {
     fontSize: 'clamp(2rem, 8vw, 3rem)',
     fontWeight: '900',
@@ -176,16 +169,17 @@ export function createDanceScreen(
       return;
     }
     const cond = challenge.conditions[0];
-    if (cond.type === 'drop_object') {
-      const done = challengeProgress.dropsWhileDancing;
+    if (cond.type === 'hit_streak') {
+      const done = challengeProgress.bestStreak;
       const total = cond.count ?? 1;
-      challengeText.textContent = `${challenge.description} (${done}/${total})`;
+      challengeText.textContent = `${challenge.description} (Best: ${done}/${total})`;
     }
     if (challengeProgress.completed && !challengeRewarded) {
       challengeRewarded = true;
       challengeText.textContent = '🎉 Challenge Complete! Bonus: ' + challenge.rewardPoints + ' Hype!';
       challengeIcon.textContent = '🏆';
       scoreState.crowdHype += challenge.rewardPoints;
+      scoreState.totalScore = Math.floor(scoreState.crowdHype);
       soundSystem.playChallengeComplete();
       haptic('heavy');
     } else if (challengeProgress.completed) {
@@ -194,273 +188,177 @@ export function createDanceScreen(
     }
   }
 
-  // ── Move buttons ───────────────────────────────────────────────────────────
-  const movePanel = el('div', {}, {
-    pointerEvents: 'auto',
+  // ── Energy bar ─────────────────────────────────────────────────────────────
+  const energyBarFill = el('div', {}, {
+    height: '100%',
+    background: 'linear-gradient(90deg, #6BCB77, #FFE66D, #FF6B6B)',
+    borderRadius: '2px',
+    width: '0%',
+    transition: 'width 0.2s ease-out',
+  });
+  const energyBarContainer = el('div', {}, {
     margin: '0 16px',
-    display: 'flex',
-    gap: '8px',
-    justifyContent: 'center',
-    flexWrap: 'wrap',
+    height: '4px',
+    background: 'rgba(255,255,255,0.1)',
+    borderRadius: '2px',
+    overflow: 'hidden',
+    pointerEvents: 'none',
+  });
+  energyBarContainer.appendChild(energyBarFill);
+
+  // ── Tap hint ───────────────────────────────────────────────────────────────
+  const tapHint = el('div', { textContent: '🎵 Tap to dance — match the beat!' }, {
+    textAlign: 'center',
+    fontSize: '13px',
+    color: 'rgba(255,255,255,0.45)',
+    padding: '6px 16px',
+    paddingBottom: 'max(env(safe-area-inset-bottom,10px),10px)',
+    pointerEvents: 'none',
   });
 
-  const moveBtnMap = new Map<DanceMoveId, HTMLButtonElement>();
+  root.append(
+    hud,
+    challengeBar,
+    el('div', {}, { flex: '1', pointerEvents: 'none' }),
+    energyBarContainer,
+    tapHint
+  );
 
-  const moveIds: DanceMoveId[] = ['wiggle', 'robot', 'worm', 'flail', 'spin'];
-  for (const moveId of moveIds) {
-    const move = DANCE_MOVES[moveId];
-    const mb = document.createElement('button');
-    mb.innerHTML = `${move.emoji}<br><span style="font-size:12px">${move.label}</span>`;
-    mb.setAttribute('aria-label', `Dance move: ${move.label}`);
-    mb.style.cssText = `
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      width: 64px; height: 64px; border-radius: 18px; border: 2px solid rgba(255,255,255,0.2);
-      background: rgba(255,255,255,0.08); color: #fff; cursor: pointer; font-size: 22px;
-      font-family: inherit; touch-action: manipulation; transition: all 0.15s;
-      flex-shrink: 0;
-    `;
-    mb.addEventListener('pointerdown', e => {
-      e.preventDefault();
-      activateMove(moveId);
-    });
-    mb.addEventListener('pointerup', () => {
-      // keep move active; it times out via score tick
-    });
-    moveBtnMap.set(moveId, mb);
-    movePanel.appendChild(mb);
-  }
+  // ── Beat and rhythm setup ──────────────────────────────────────────────────
+  let audioStarted = false;
+  let beatUnsub: (() => void) | null = null;
 
-  function updateMoveButtons(active: DanceMoveId): void {
-    for (const [id, mb] of moveBtnMap) {
-      if (id === active) {
-        mb.style.background = 'rgba(108,63,245,0.8)';
-        mb.style.borderColor = '#fff';
-        mb.style.transform = 'scale(1.08)';
-      } else {
-        mb.style.background = 'rgba(255,255,255,0.08)';
-        mb.style.borderColor = 'rgba(255,255,255,0.2)';
-        mb.style.transform = '';
-      }
-    }
-  }
+  // Auto-miss handler from rhythm engine
+  const unsubMiss = rhythmEngine.onMiss(zone => {
+    const prevCombo = scoreState.combo;
+    const missResult: RhythmHitResult = { rating: 'miss', zone, targetId: -1 };
+    registerRhythmHit(scoreState, missResult);
 
-  let moveTimeout: ReturnType<typeof setTimeout> | null = null;
+    character.reactToZone(zone, 'miss');
 
-  function activateMove(moveId: DanceMoveId): void {
-    haptic('light');
-    soundSystem.init();
-
-    const prev = state.activeMove;
-    state.activeMove = moveId;
-    character.setDanceMove(moveId);
-    registerDanceMove(scoreState, moveId);
-    updateMoveButtons(moveId);
-
-    if (prev !== moveId) {
-      soundSystem.playDanceStart();
+    if (prevCombo >= 3) {
+      crowdMgr.onComboBreak();
+      soundSystem.playComboBreak();
+    } else {
+      soundSystem.playMiss();
     }
 
-    // Play move sound
-    const sounds: Record<DanceMoveId, () => void> = {
-      idle: () => {},
-      wiggle: () => soundSystem.playWiggle(),
-      robot: () => soundSystem.playRobot(),
-      worm: () => soundSystem.playWorm(),
-      flail: () => soundSystem.playFlail(),
-      spin: () => soundSystem.playSpin(),
-    };
-    sounds[moveId]();
-
-    // Auto-return to idle after move duration
-    if (moveTimeout) clearTimeout(moveTimeout);
-    const dur = DANCE_MOVES[moveId].duration;
-    if (isFinite(dur)) {
-      moveTimeout = setTimeout(() => {
-        state.activeMove = 'idle';
-        character.setDanceMove('idle');
-        updateMoveButtons('idle');
-      }, dur);
+    if (challengeProgress) {
+      updateChallengeProgress(challengeProgress, scoreState, 'miss');
+      updateChallengeUI();
     }
-  }
 
-  // ── Object tray ────────────────────────────────────────────────────────────
-  const trayScroll = el('div', {}, {
-    overflowX: 'auto',
-    padding: '0 16px',
-    pointerEvents: 'auto',
+    updateHUD();
   });
+  cleanup.push(unsubMiss);
 
-  const tray = el('div', {}, {
-    display: 'flex',
-    gap: '8px',
-    paddingBottom: '4px',
-    justifyContent: 'flex-start',
-  });
-
-  const objTypes: PhysicsObjectType[] = ['beachball', 'duck', 'pillows', 'taco', 'watermelon', 'bowling', 'anvil', 'feather'];
-
-  for (const objType of objTypes) {
-    const def = PHYSICS_OBJECTS[objType];
-    const ob = document.createElement('button');
-    ob.style.cssText = `
-      display: flex; flex-direction: column; align-items: center; gap: 2px;
-      padding: 8px 10px; border-radius: 14px; border: 1.5px solid rgba(255,255,255,0.15);
-      background: rgba(255,255,255,0.07); color: #fff; cursor: pointer;
-      font-size: 24px; font-family: inherit; flex-shrink: 0; touch-action: manipulation;
-    `;
-    ob.innerHTML = `${def.emoji}<span style="font-size:9px;color:rgba(255,255,255,0.5)">${def.label.split(' ')[0]}</span>`;
-    ob.setAttribute('aria-label', `Drop ${def.label}`);
-
-    ob.addEventListener('pointerdown', e => {
-      e.preventDefault();
-      if (objectMgr.count >= MAX_OBJECTS) {
-        haptic('light');
-        return;
-      }
-      haptic('medium');
-      soundSystem.init();
-      soundSystem.playDrop();
-      const w = gameEngine.width;
-      const h = gameEngine.height;
-      const dropped = objectMgr.drop(objType, w, h);
-      if (dropped) {
-        scoreState.objectsDropped++;
-        if (challengeProgress) {
-          updateChallengeProgress(challengeProgress, scoreState, state.activeMove, objType);
-        }
-        updateChallengeUI();
-      }
-    });
-
-    tray.appendChild(ob);
-  }
-
-  // Clear button
-  const clearBtn = document.createElement('button');
-  clearBtn.innerHTML = '🗑️<span style="font-size:9px;display:block;color:rgba(255,255,255,0.5)">Clear</span>';
-  clearBtn.style.cssText = `
-    display: flex; flex-direction: column; align-items: center; gap: 2px;
-    padding: 8px 10px; border-radius: 14px; border: 1.5px solid rgba(255,80,80,0.3);
-    background: rgba(255,50,50,0.1); color: #fff; cursor: pointer;
-    font-size: 24px; font-family: inherit; flex-shrink: 0; touch-action: manipulation;
-  `;
-  clearBtn.addEventListener('click', () => {
-    haptic('medium');
-    objectMgr.clearAll();
-  });
-  tray.appendChild(clearBtn);
-
-  trayScroll.appendChild(tray);
-
-  // ── Bottom spacer ──────────────────────────────────────────────────────────
-  const bottomBar = el('div', {}, {
-    pointerEvents: 'auto',
-    paddingBottom: 'max(env(safe-area-inset-bottom,12px),12px)',
-    paddingTop: '8px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-  });
-  bottomBar.append(movePanel, trayScroll);
-
-  root.append(hud, challengeBar, el('div', {}, { flex: '1', pointerEvents: 'none' }), bottomBar);
-
-  // ── Swipe gesture for move intensity ──────────────────────────────────────
-  let swipeStart: { x: number; y: number } | null = null;
-
+  // ── Canvas pointer handler ─────────────────────────────────────────────────
   const canvasEl = app.view as HTMLCanvasElement;
   canvasEl.style.pointerEvents = 'auto';
+  canvasEl.style.touchAction = 'none';
 
-  const handleTouchStart = (e: TouchEvent): void => {
-    if (e.touches.length === 1) {
-      swipeStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  const handlePointerDown = (e: PointerEvent): void => {
+    e.preventDefault();
+    haptic('light');
+
+    // First touch: unlock audio and start beat
+    if (!audioStarted) {
+      audioStarted = true;
+      soundSystem.init();
+      soundSystem.setEnabled(state.audioEnabled);
+      soundSystem.startBeat(BPM);
+      rhythmEngine.start();
+
+      beatUnsub = soundSystem.onBeat((beatNum, beatTime) => {
+        rhythmEngine.onBeatFired(beatNum, beatTime);
+      });
+
+      // Hide hint after first tap
+      tapHint.textContent = '';
     }
-  };
 
-  const handleTouchEnd = (e: TouchEvent): void => {
-    if (!swipeStart || e.changedTouches.length === 0) return;
-    const dx = e.changedTouches[0].clientX - swipeStart.x;
-    const dy = e.changedTouches[0].clientY - swipeStart.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
+    // Convert screen coords to canvas coords
+    const rect = canvasEl.getBoundingClientRect();
+    const tapX = (e.clientX - rect.left) * (gameEngine.width / rect.width);
+    const tapY = (e.clientY - rect.top) * (gameEngine.height / rect.height);
 
-    if (dist > 60) {
-      // Swipe gesture - trigger flail or spin
-      if (Math.abs(dx) > Math.abs(dy)) {
-        activateMove('flail');
-      } else if (dy < 0) {
-        activateMove('spin');
+    const audioNow = soundSystem.getAudioCurrentTime() ?? 0;
+    const hitResult = rhythmEngine.tryHit(tapX, tapY, audioNow);
+
+    if (hitResult) {
+      // Scored rhythm hit
+      const points = registerRhythmHit(scoreState, hitResult);
+      character.reactToZone(hitResult.zone, hitResult.rating);
+      crowdMgr.onRhythmHit(hitResult.rating, scoreState.comboMultiplier);
+
+      if (hitResult.rating === 'perfect') {
+        soundSystem.playPerfectHit();
       } else {
-        activateMove('worm');
+        soundSystem.playGoodHit();
       }
+
+      if (points > 0) {
+        showFloatingScore(points, tapX, tapY - 30, hitResult.rating === 'perfect');
+      }
+
+      checkComboMilestones();
+
+      if (challengeProgress) {
+        updateChallengeProgress(challengeProgress, scoreState, hitResult.rating);
+        updateChallengeUI();
+      }
+    } else {
+      // Free-form puppeteer (no target hit)
+      const zone = rhythmEngine.getTapZone(tapX, tapY);
+      character.reactToZone(zone, 'good');
     }
-    swipeStart = null;
+
+    updateHUD();
   };
 
-  canvasEl.addEventListener('touchstart', handleTouchStart, { passive: true });
-  canvasEl.addEventListener('touchend', handleTouchEnd, { passive: true });
+  canvasEl.addEventListener('pointerdown', handlePointerDown);
+  cleanup.push(() => canvasEl.removeEventListener('pointerdown', handlePointerDown));
 
-  // ── Collision detection ────────────────────────────────────────────────────
-  const matterCollisionHandler = (event: Matter.IEventCollision<Matter.Engine>): void => {
-    for (const pair of event.pairs) {
-      const { bodyA, bodyB } = pair;
-      // Check if an object body is near the character
-      const bodies = [bodyA, bodyB];
-      for (const body of bodies) {
-        if (body.label?.startsWith('obj_') && body.label !== 'ground') {
-          const dx = body.position.x - charX;
-          const dy = body.position.y - charY;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < charHitR * 1.5) {
-            // Find the object
-            const obj = objectMgr.activeObjects.find(o => o.body === body);
-            if (obj && !obj.hasHitCharacter) {
-              obj.hasHitCharacter = true;
-
-              const result = registerCollision(scoreState, obj.type);
-              const dir = dx < 0 ? 'left' : 'right';
-              character.wobble(result.wobbleIntensity, dir);
-              character.showReaction(result.emoji);
-
-              if (!state.reducedMotion) {
-                triggerShake(result.wobbleIntensity * 5);
-              }
-
-              soundSystem.init();
-              soundSystem.playCollision(obj.def.mass);
-
-              // Floating score text
-              showFloatingScore(result.points, body.position.x, body.position.y);
-
-              // Update UI
-              scoreNum.textContent = formatScore(scoreState.crowdHype);
-              comboNum.textContent = `x${scoreState.comboMultiplier.toFixed(1)}`;
-
-              if (scoreState.combo > 0 && scoreState.combo % 5 === 0) {
-                soundSystem.playComboUp();
-              }
-
-              haptic('medium');
-            }
-          }
-        }
-      }
+  // ── Combo milestone effects ────────────────────────────────────────────────
+  function checkComboMilestones(): void {
+    const combo = scoreState.combo;
+    if (combo === 5) {
+      crowdMgr.triggerEffect('spotlight');
+      soundSystem.playPowerUp();
+    } else if (combo === 10) {
+      crowdMgr.triggerEffect('discoBall');
+      soundSystem.playPowerUp();
+    } else if (combo === 15) {
+      crowdMgr.triggerEffect('hypeTrain');
     }
-  };
 
-  Matter.Events.on(gameEngine.physicsEngine, 'collisionStart', matterCollisionHandler);
+    if (scoreState.consecutivePerfects >= 5) {
+      crowdMgr.triggerEffect('confetti');
+    }
+
+    if (combo > 0 && combo % 5 === 0) {
+      soundSystem.playComboUp();
+    }
+  }
+
+  // ── HUD helper ─────────────────────────────────────────────────────────────
+  function updateHUD(): void {
+    scoreNum.textContent = formatScore(scoreState.totalScore);
+    comboNum.textContent = `x${scoreState.comboMultiplier.toFixed(1)}`;
+    comboNum.style.color = scoreState.combo >= 5 ? '#FFE66D' : '#6BCB77';
+  }
 
   // ── Floating score text ────────────────────────────────────────────────────
-  function showFloatingScore(points: number, x: number, y: number): void {
+  function showFloatingScore(points: number, x: number, y: number, perfect: boolean): void {
     const text = new PIXI.Text(`+${formatScore(points)}`, {
-      fontSize: 24,
+      fontSize: perfect ? 28 : 20,
       fontWeight: '900',
-      fill: ['#FFE66D', '#FF6B6B'],
+      fill: perfect ? ['#FFFFFF', '#FFE66D'] : ['#FFE66D', '#FF6B6B'],
       stroke: '#333',
       strokeThickness: 3,
     });
     text.anchor.set(0.5);
-    text.position.set(x, y - 20);
+    text.position.set(x, y);
     fxLayer.addChild(text);
 
     let vy = -2;
@@ -468,7 +366,7 @@ export function createDanceScreen(
     const ticker = (dt: number): void => {
       age += dt / 60;
       text.y += vy;
-      vy *= 0.96;
+      vy *= 0.95;
       text.alpha = Math.max(0, 1 - age * 1.5);
       if (text.alpha <= 0) {
         fxLayer.removeChild(text);
@@ -479,64 +377,55 @@ export function createDanceScreen(
   }
 
   // ── Main update loop ───────────────────────────────────────────────────────
+  let prevW = W;
+  let prevH = H;
+
   const unsubUpdate = gameEngine.onUpdate(dt => {
-    // Update character
+    const audioNow = soundSystem.getAudioCurrentTime() ?? 0;
+
     character.update(dt);
+    rhythmEngine.update(dt, audioNow);
+    crowdMgr.update(dt);
 
-    // Update objects
-    objectMgr.update(dt, gameEngine.height);
-
-    // Tick score
     tickScore(scoreState, dt, state.activeMove);
-    scoreNum.textContent = formatScore(scoreState.crowdHype);
-    comboNum.textContent = `x${scoreState.comboMultiplier.toFixed(1)}`;
-
-    // Screen shake
-    if (shakeIntensity > 0.5 && !state.reducedMotion) {
-      const sx = (Math.random() - 0.5) * shakeIntensity;
-      const sy = (Math.random() - 0.5) * shakeIntensity;
-      app.stage.position.set(sx, sy);
-      shakeIntensity *= 0.82;
-    } else {
-      app.stage.position.set(0, 0);
-      shakeIntensity = 0;
-    }
+    energyBarFill.style.width = `${crowdMgr.energyLevel * 100}%`;
 
     // Handle window resize
-    if (gameEngine.width !== bgGfx.width || gameEngine.height !== bgGfx.height) {
+    if (gameEngine.width !== prevW || gameEngine.height !== prevH) {
+      prevW = gameEngine.width;
+      prevH = gameEngine.height;
       bgGfx.clear();
       drawBackground(bgGfx, gameEngine.width, gameEngine.height);
-      const newW = gameEngine.width;
-      const newH = gameEngine.height;
-      character.container.position.set(newW / 2, newH * 0.55);
-      objectMgr.setCharacterPosition(newW / 2, newH * 0.55);
+      character.container.position.set(gameEngine.width / 2, gameEngine.height * 0.55);
     }
   });
 
   cleanup.push(unsubUpdate);
   cleanup.push(() => {
-    Matter.Events.off(gameEngine.physicsEngine, 'collisionStart', matterCollisionHandler as () => void);
-  });
-  cleanup.push(() => {
-    canvasEl.removeEventListener('touchstart', handleTouchStart);
-    canvasEl.removeEventListener('touchend', handleTouchEnd);
-  });
-  cleanup.push(() => {
-    objectMgr.clearAll();
-    app.stage.removeChild(bgLayer, objectLayer, characterLayer, fxLayer);
-    if (moveTimeout) clearTimeout(moveTimeout);
+    if (beatUnsub) beatUnsub();
+    soundSystem.stopBeat();
+    rhythmEngine.destroy();
+    crowdMgr.destroy();
+    app.stage.removeChild(bgLayer, crowdLayer, characterLayer, rhythmLayer, fxLayer);
   });
 
   // ── Session finish ─────────────────────────────────────────────────────────
   async function finishSession(): Promise<void> {
-    if (scoreState.crowdHype <= 0) return;
+    const bonus = calculateSessionBonus(scoreState);
+    if (bonus > 0) {
+      scoreState.crowdHype += bonus;
+      scoreState.totalScore = Math.floor(scoreState.crowdHype);
+    }
+
+    if (scoreState.totalScore <= 0) return;
 
     const entry = {
-      score: Math.floor(scoreState.crowdHype),
-      mode: 'classic',
+      score: scoreState.totalScore,
+      mode: 'rhythm',
       metadata: {
-        objectsDropped: scoreState.objectsDropped,
-        collisions: scoreState.collisionsCount,
+        perfectHits: scoreState.perfectHits,
+        goodHits: scoreState.goodHits,
+        totalHits: scoreState.totalHitAttempts,
         comboPeak: scoreState.comboMultiplier,
         duration: Math.floor((Date.now() - scoreState.sessionStart) / 1000),
       },

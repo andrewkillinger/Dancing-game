@@ -3,11 +3,147 @@
 
 type WaveType = OscillatorType;
 
+// ─── Beat Engine (Chris Wilson lookahead scheduler) ───────────────────────────
+
+class BeatEngine {
+  private ctx: AudioContext;
+  private master: GainNode;
+  private bpm: number;
+  private secPerBeat: number;
+  private nextBeatTime = 0;
+  private beatCount = 0;
+  private readonly SCHEDULE_AHEAD = 0.1;  // seconds lookahead
+  private readonly INTERVAL_MS = 25;       // polling rate
+  private intervalId: ReturnType<typeof setInterval> | null = null;
+  private beatCallbacks: Array<(beatNum: number, beatTime: number) => void> = [];
+
+  constructor(ctx: AudioContext, master: GainNode, bpm: number) {
+    this.ctx = ctx;
+    this.master = master;
+    this.bpm = bpm;
+    this.secPerBeat = 60.0 / bpm;
+  }
+
+  start(startTime: number): void {
+    this.nextBeatTime = startTime;
+    this.beatCount = 0;
+    this.intervalId = setInterval(() => this.schedule(), this.INTERVAL_MS);
+  }
+
+  stop(): void {
+    if (this.intervalId !== null) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+  }
+
+  onBeat(cb: (beatNum: number, beatTime: number) => void): () => void {
+    this.beatCallbacks.push(cb);
+    return () => {
+      this.beatCallbacks = this.beatCallbacks.filter(c => c !== cb);
+    };
+  }
+
+  private schedule(): void {
+    while (this.nextBeatTime < this.ctx.currentTime + this.SCHEDULE_AHEAD) {
+      const beatIndex = this.beatCount % 4;
+      const t = this.nextBeatTime;
+      const n = this.beatCount;
+
+      // Notify listeners with the exact audio-clock beat time
+      this.beatCallbacks.forEach(cb => cb(n, t));
+
+      // Drum pattern: kick=1, snare=3, hihat=every beat
+      this.playHihat(t);
+      if (beatIndex === 0) this.playKick(t);
+      if (beatIndex === 2) this.playSnare(t);
+
+      this.nextBeatTime += this.secPerBeat;
+      this.beatCount++;
+    }
+  }
+
+  private playKick(time: number): void {
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(150, time);
+    osc.frequency.exponentialRampToValueAtTime(50, time + 0.15);
+    gain.gain.setValueAtTime(0.6, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
+    osc.connect(gain);
+    gain.connect(this.master);
+    osc.start(time);
+    osc.stop(time + 0.22);
+  }
+
+  private playSnare(time: number): void {
+    const bufSize = Math.floor(this.ctx.sampleRate * 0.1);
+    const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 2000;
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.35, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    src.start(time);
+
+    // Snare body tone
+    const body = this.ctx.createOscillator();
+    const bodyGain = this.ctx.createGain();
+    body.type = 'sine';
+    body.frequency.setValueAtTime(200, time);
+    bodyGain.gain.setValueAtTime(0.25, time);
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, time + 0.08);
+    body.connect(bodyGain);
+    bodyGain.connect(this.master);
+    body.start(time);
+    body.stop(time + 0.1);
+  }
+
+  private playHihat(time: number): void {
+    const bufSize = Math.floor(this.ctx.sampleRate * 0.04);
+    const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 8000;
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.12, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    src.start(time);
+  }
+}
+
+// ─── Sound System ─────────────────────────────────────────────────────────────
+
 class SoundSystem {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private _enabled = false;
   private initialized = false;
+  private beatEngine: BeatEngine | null = null;
 
   /** Must be called from user gesture to unlock audio */
   init(): void {
@@ -38,6 +174,35 @@ class SoundSystem {
     this.setEnabled(!this._enabled);
     return this._enabled;
   }
+
+  getAudioContext(): AudioContext | null {
+    return this.ctx;
+  }
+
+  getAudioCurrentTime(): number | null {
+    return this.ctx?.currentTime ?? null;
+  }
+
+  // ─── Beat Engine ─────────────────────────────────────────────────────────
+
+  startBeat(bpm: number): void {
+    if (!this.initialized || !this.ctx || !this.masterGain) return;
+    this.beatEngine?.stop();
+    this.beatEngine = new BeatEngine(this.ctx, this.masterGain, bpm);
+    this.beatEngine.start(this.ctx.currentTime + 0.1);
+  }
+
+  stopBeat(): void {
+    this.beatEngine?.stop();
+    this.beatEngine = null;
+  }
+
+  onBeat(cb: (beatNum: number, beatTime: number) => void): () => void {
+    if (!this.beatEngine) return () => {};
+    return this.beatEngine.onBeat(cb);
+  }
+
+  // ─── Internal helpers ─────────────────────────────────────────────────────
 
   private getAudio(): { ctx: AudioContext; master: GainNode } | null {
     if (!this.initialized || !this.ctx || !this.masterGain || !this._enabled) return null;
@@ -102,7 +267,37 @@ class SoundSystem {
     src.start(now);
   }
 
-  // ─── Sound Effects ───────────────────────────────────────────────────────
+  // ─── Rhythm SFX ──────────────────────────────────────────────────────────
+
+  playPerfectHit(): void {
+    // Bright ascending 3-note arpeggio
+    const freqs = [660, 880, 1100];
+    freqs.forEach((f, i) => setTimeout(() => this.playTone(f, 0.1, 'sine', 0.4), i * 40));
+  }
+
+  playGoodHit(): void {
+    this.playTone(550, 0.12, 'sine', 0.3);
+  }
+
+  playMiss(): void {
+    this.playTone(200, 0.2, 'sawtooth', 0.2);
+  }
+
+  playComboBreak(): void {
+    const freqs = [440, 370, 330];
+    freqs.forEach((f, i) => setTimeout(() => this.playTone(f, 0.1, 'square', 0.25), i * 50));
+  }
+
+  playPowerUp(): void {
+    const freqs = [523, 659, 784, 1047];
+    freqs.forEach((f, i) => setTimeout(() => this.playTone(f, 0.15, 'sine', 0.35), i * 60));
+  }
+
+  playAudienceCheer(): void {
+    this.playNoise(0.4, 0.15, 1200);
+  }
+
+  // ─── Existing SFX (unchanged) ─────────────────────────────────────────────
 
   playDanceStart(): void {
     this.playTone(440, 0.15, 'square', 0.4);
@@ -147,7 +342,6 @@ class SoundSystem {
   }
 
   playCollision(mass: number): void {
-    // Heavy = lower thud, light = higher boing
     const baseFreq = Math.max(80, 400 - mass * 15);
     const wave: WaveType = mass > 5 ? 'sawtooth' : 'sine';
     this.playTone(baseFreq, 0.3, wave, 0.5);
