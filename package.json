@@ -1,0 +1,38 @@
+{
+  "name": "wobble-dance",
+  "version": "1.0.0",
+  "description": "A humorous, physics-reactive dancing game for mobile web",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts,.tsx --max-warnings 0",
+    "format": "prettier --write src/**/*.ts index.html",
+    "format:check": "prettier --check src/**/*.ts index.html",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.3",
+    "matter-js": "^0.19.0",
+    "pixi.js": "^7.4.2"
+  },
+  "devDependencies": {
+    "@types/matter-js": "^0.19.6",
+    "@types/node": "^20.11.5",
+    "@typescript-eslint/eslint-plugin": "^6.19.1",
+    "@typescript-eslint/parser": "^6.19.1",
+    "@vitest/coverage-v8": "^1.2.2",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.2.4",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12",
+    "vitest": "^1.2.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
