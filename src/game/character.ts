@@ -6,6 +6,8 @@ import {
   createJoint,
   updateJoint,
   SkinTone,
+  TapZone,
+  HitRating,
 } from '@/types';
 
 // ─── Skin tone palette ────────────────────────────────────────────────────────
@@ -56,6 +58,17 @@ function defaultJoints(): CharacterJoints {
     headBob: createJoint(0, 0.05, 0.8),
   };
 }
+
+// ─── Zone → Joint mapping ─────────────────────────────────────────────────────
+
+const ZONE_TO_JOINTS: Record<TapZone, Array<keyof CharacterJoints>> = {
+  'upper-left':   ['leftShoulder', 'leftElbow'],
+  'upper-center': ['torsoTilt', 'headBob'],
+  'upper-right':  ['rightShoulder', 'rightElbow'],
+  'lower-left':   ['leftHip', 'leftKnee'],
+  'lower-center': ['leftHip', 'rightHip'],
+  'lower-right':  ['rightHip', 'rightKnee'],
+};
 
 // ─── Dance Animation Definitions ──────────────────────────────────────────────
 
@@ -159,12 +172,22 @@ export class Character {
     rightUpperArm: PIXI.Graphics;
     rightLowerArm: PIXI.Graphics;
     torso: PIXI.Graphics;
+    neck: PIXI.Graphics;
     leftUpperLeg: PIXI.Graphics;
     leftLowerLeg: PIXI.Graphics;
     rightUpperLeg: PIXI.Graphics;
     rightLowerLeg: PIXI.Graphics;
     leftShoe: PIXI.Graphics;
     rightShoe: PIXI.Graphics;
+    // Joint connector dots
+    leftShoulderDot: PIXI.Graphics;
+    rightShoulderDot: PIXI.Graphics;
+    leftElbowDot: PIXI.Graphics;
+    rightElbowDot: PIXI.Graphics;
+    leftHipDot: PIXI.Graphics;
+    rightHipDot: PIXI.Graphics;
+    leftKneeDot: PIXI.Graphics;
+    rightKneeDot: PIXI.Graphics;
     reactionBubble: PIXI.Container;
     reactionText: PIXI.Text;
   };
@@ -172,7 +195,7 @@ export class Character {
   private currentMove: DanceMoveId = 'idle';
   private moveTime = 0;
   private reactionTimer = 0;
-  private wobbleIntensity = 0; // from collisions
+  private wobbleIntensity = 0;
   private isSpinning = false;
   private spinAngle = 0;
 
@@ -225,12 +248,21 @@ export class Character {
       rightUpperArm: g(),
       rightLowerArm: g(),
       torso: g(),
+      neck: g(),
       leftUpperLeg: g(),
       leftLowerLeg: g(),
       rightUpperLeg: g(),
       rightLowerLeg: g(),
       leftShoe: g(),
       rightShoe: g(),
+      leftShoulderDot: g(),
+      rightShoulderDot: g(),
+      leftElbowDot: g(),
+      rightElbowDot: g(),
+      leftHipDot: g(),
+      rightHipDot: g(),
+      leftKneeDot: g(),
+      rightKneeDot: g(),
       reactionBubble: bubbleContainer,
       reactionText,
     };
@@ -244,7 +276,7 @@ export class Character {
     c.addChild(this.graphics.leftUpperArm);
     c.addChild(this.graphics.leftLowerArm);
 
-    // Legs (behind torso when walking forward)
+    // Legs (behind torso)
     c.addChild(this.graphics.rightUpperLeg);
     c.addChild(this.graphics.rightLowerLeg);
     c.addChild(this.graphics.rightShoe);
@@ -258,9 +290,22 @@ export class Character {
     // Torso
     c.addChild(this.graphics.torso);
 
+    // Neck (between torso and head)
+    c.addChild(this.graphics.neck);
+
     // Front arms
     c.addChild(this.graphics.rightUpperArm);
     c.addChild(this.graphics.rightLowerArm);
+
+    // Joint connector dots (on top of all limbs)
+    c.addChild(this.graphics.leftShoulderDot);
+    c.addChild(this.graphics.rightShoulderDot);
+    c.addChild(this.graphics.leftElbowDot);
+    c.addChild(this.graphics.rightElbowDot);
+    c.addChild(this.graphics.leftHipDot);
+    c.addChild(this.graphics.rightHipDot);
+    c.addChild(this.graphics.leftKneeDot);
+    c.addChild(this.graphics.rightKneeDot);
 
     // Head, hair, accessories
     c.addChild(this.graphics.head);
@@ -322,9 +367,27 @@ export class Character {
     h.drawCircle(11, -6, 2);
     h.endFill();
 
+    // Eyebrows (two short diagonal lines above eyes)
+    h.lineStyle(2.5, 0x333333, 0.6);
+    h.moveTo(-15, -13);
+    h.lineTo(-4, -15);
+    h.moveTo(4, -15);
+    h.lineTo(15, -13);
+    h.lineStyle(0);
+
+    // Nose (small skin-toned ellipse at center of face)
+    h.beginFill(skinColor, 0.75);
+    h.drawEllipse(0, 3, 3, 5);
+    h.endFill();
+    // Nostril hint
+    h.beginFill(0x333333, 0.2);
+    h.drawCircle(-2.5, 5, 1.8);
+    h.drawCircle(2.5, 5, 1.8);
+    h.endFill();
+
     // Mouth (smile)
     h.lineStyle(2.5, 0x333333);
-    h.arc(0, 6, 10, 0.3, Math.PI - 0.3);
+    h.arc(0, 8, 9, 0.3, Math.PI - 0.3);
     h.lineStyle(0);
 
     // ── Hair ──────────────────────────────────────────────────────────────────
@@ -336,11 +399,25 @@ export class Character {
     // ── Glasses ───────────────────────────────────────────────────────────────
     this.drawGlasses(glassesColor, c.glasses, R);
 
-    // ── Torso ─────────────────────────────────────────────────────────────────
+    // ── Neck ──────────────────────────────────────────────────────────────────
+    const neck = this.graphics.neck;
+    neck.clear();
+    neck.beginFill(skinColor);
+    neck.drawRoundedRect(-5, 0, 10, 14, 3);
+    neck.endFill();
+
+    // ── Torso (tapered trapezoid) ──────────────────────────────────────────────
     const torso = this.graphics.torso;
     torso.clear();
     torso.beginFill(topColor);
-    torso.drawRoundedRect(-TW / 2, 0, TW, TH, 6);
+    const topW = TW * 1.15;
+    const botW = TW * 0.82;
+    torso.drawPolygon([
+      -topW / 2, 0,
+       topW / 2, 0,
+       botW / 2, TH,
+      -botW / 2, TH,
+    ]);
     torso.endFill();
 
     // Collar detail
@@ -388,6 +465,32 @@ export class Character {
       const sx = side === 'left' ? -3 : 3;
       sh.drawEllipse(sx, 0, LW, 7);
       sh.endFill();
+    }
+
+    // ── Joint connector dots ──────────────────────────────────────────────────
+    for (const dot of [this.graphics.leftShoulderDot, this.graphics.rightShoulderDot]) {
+      dot.clear();
+      dot.beginFill(topColor);
+      dot.drawCircle(0, 0, 7);
+      dot.endFill();
+    }
+    for (const dot of [this.graphics.leftElbowDot, this.graphics.rightElbowDot]) {
+      dot.clear();
+      dot.beginFill(topColor, 0.85);
+      dot.drawCircle(0, 0, 5);
+      dot.endFill();
+    }
+    for (const dot of [this.graphics.leftHipDot, this.graphics.rightHipDot]) {
+      dot.clear();
+      dot.beginFill(bottomColor);
+      dot.drawCircle(0, 0, 7);
+      dot.endFill();
+    }
+    for (const dot of [this.graphics.leftKneeDot, this.graphics.rightKneeDot]) {
+      dot.clear();
+      dot.beginFill(bottomColor, 0.85);
+      dot.drawCircle(0, 0, 5);
+      dot.endFill();
     }
   }
 
@@ -532,7 +635,7 @@ export class Character {
     // Apply dance animation targets
     this.applyMoveTargets();
 
-    // Add wobble noise from collisions
+    // Add wobble noise
     if (this.wobbleIntensity > 0.01) {
       const w = this.wobbleIntensity;
       this.joints.torsoTilt.velocity += (Math.random() - 0.5) * w * 0.5;
@@ -547,7 +650,7 @@ export class Character {
 
     // Spin state
     if (this.currentMove === 'spin') {
-      this.spinAngle += dt * 5; // full spin ~1.2s
+      this.spinAngle += dt * 5;
     } else {
       this.spinAngle = 0;
     }
@@ -612,7 +715,6 @@ export class Character {
     const LL = this.LEG_LEN;
     const SL = this.SHIN_LEN;
 
-    // Torso origin (0,0) is character center (hip level ~center of torso)
     const torsoTilt = j.torsoTilt.angle;
 
     // Torso
@@ -620,8 +722,15 @@ export class Character {
     torso.position.set(0, -TH / 2);
     torso.rotation = torsoTilt;
 
-    // Head center relative to torso top
-    const headY = -TH / 2 - R;
+    // Neck (sits between torso top and head)
+    const neckX = Math.sin(torsoTilt) * 8;
+    const neckY = -TH / 2 - 14;
+    const neck = this.graphics.neck;
+    neck.position.set(neckX, neckY);
+    neck.rotation = torsoTilt;
+
+    // Head center
+    const headY = -TH / 2 - R - 2;
     const head = this.graphics.head;
     head.position.set(Math.sin(torsoTilt) * TH / 2, headY + j.headBob.angle * 10);
     head.rotation = j.headBob.angle * 0.5;
@@ -638,9 +747,20 @@ export class Character {
     // Shoulder anchor
     const shoulderX = 0;
     const shoulderY = -TH * 0.82;
+    const shoulderOffsetX = Math.sin(torsoTilt) * 10;
+
+    // Shoulder joint dots
+    this.graphics.leftShoulderDot.position.set(
+      shoulderX - TW / 2 + shoulderOffsetX,
+      shoulderY + torsoTilt * 15
+    );
+    this.graphics.rightShoulderDot.position.set(
+      shoulderX + TW / 2 + shoulderOffsetX,
+      shoulderY + torsoTilt * 15
+    );
 
     // Left arm
-    this.positionLimb(
+    const leftElbow = this.positionLimb(
       this.graphics.leftUpperArm,
       this.graphics.leftLowerArm,
       shoulderX - TW / 2,
@@ -650,9 +770,10 @@ export class Character {
       AL,
       FL
     );
+    this.graphics.leftElbowDot.position.set(leftElbow.midX, leftElbow.midY);
 
     // Right arm
-    this.positionLimb(
+    const rightElbow = this.positionLimb(
       this.graphics.rightUpperArm,
       this.graphics.rightLowerArm,
       shoulderX + TW / 2,
@@ -662,13 +783,18 @@ export class Character {
       AL,
       FL
     );
+    this.graphics.rightElbowDot.position.set(rightElbow.midX, rightElbow.midY);
 
-    // Hip anchor (top of legs = bottom of torso)
+    // Hip anchor
     const hipY = TH / 2;
     const hipOffset = TW * 0.28;
 
+    // Hip joint dots
+    this.graphics.leftHipDot.position.set(-hipOffset, hipY);
+    this.graphics.rightHipDot.position.set(hipOffset, hipY);
+
     // Left leg
-    this.positionLimb(
+    const leftKnee = this.positionLimb(
       this.graphics.leftUpperLeg,
       this.graphics.leftLowerLeg,
       -hipOffset,
@@ -679,9 +805,10 @@ export class Character {
       SL,
       this.graphics.leftShoe
     );
+    this.graphics.leftKneeDot.position.set(leftKnee.midX, leftKnee.midY);
 
     // Right leg
-    this.positionLimb(
+    const rightKnee = this.positionLimb(
       this.graphics.rightUpperLeg,
       this.graphics.rightLowerLeg,
       hipOffset,
@@ -692,6 +819,7 @@ export class Character {
       SL,
       this.graphics.rightShoe
     );
+    this.graphics.rightKneeDot.position.set(rightKnee.midX, rightKnee.midY);
 
     // Full body spin (for spin move)
     if (this.currentMove === 'spin') {
@@ -711,23 +839,25 @@ export class Character {
     upperLen: number,
     lowerLen: number,
     foot?: PIXI.Graphics
-  ): void {
+  ): { midX: number; midY: number } {
     upper.position.set(ox, oy);
     upper.rotation = upperAngle;
 
-    const elbowX = ox + Math.sin(upperAngle) * upperLen;
-    const elbowY = oy + Math.cos(upperAngle) * upperLen;
+    const midX = ox + Math.sin(upperAngle) * upperLen;
+    const midY = oy + Math.cos(upperAngle) * upperLen;
 
-    lower.position.set(elbowX, elbowY);
+    lower.position.set(midX, midY);
     lower.rotation = upperAngle + lowerAngle;
 
     if (foot) {
       const footAngle = lower.rotation;
-      const footX = elbowX + Math.sin(footAngle) * lowerLen;
-      const footY = elbowY + Math.cos(footAngle) * lowerLen;
+      const footX = midX + Math.sin(footAngle) * lowerLen;
+      const footY = midY + Math.cos(footAngle) * lowerLen;
       foot.position.set(footX, footY);
       foot.rotation = 0;
     }
+
+    return { midX, midY };
   }
 
   // ─── Public API ───────────────────────────────────────────────────────────
@@ -736,6 +866,28 @@ export class Character {
     if (this.currentMove !== move) {
       this.currentMove = move;
       this.moveTime = 0;
+    }
+  }
+
+  /** Impulse specific joints based on which tap zone was hit */
+  reactToZone(zone: TapZone, rating: HitRating): void {
+    if (rating === 'miss') {
+      // Small torso stumble
+      this.joints.torsoTilt.velocity += (Math.random() - 0.5) * 0.4;
+      this.joints.headBob.velocity += 0.2;
+      return;
+    }
+
+    const jointKeys = ZONE_TO_JOINTS[zone];
+    const intensity = rating === 'perfect' ? 1.4 : 0.8;
+
+    for (const key of jointKeys) {
+      const sign = Math.random() > 0.5 ? 1 : -1;
+      this.joints[key].velocity += sign * intensity;
+    }
+
+    if (rating === 'perfect') {
+      this.showReaction('✨');
     }
   }
 

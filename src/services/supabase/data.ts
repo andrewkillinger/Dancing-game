@@ -218,7 +218,7 @@ export class DataService {
     const result = {
       date,
       completed: progress.completed,
-      dropsWhileDancing: progress.dropsWhileDancing,
+      bestStreak: progress.bestStreak,
       rewardPoints: challenge.rewardPoints,
     };
 

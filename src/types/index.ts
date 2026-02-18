@@ -66,120 +66,19 @@ export const DANCE_MOVES: Record<DanceMoveId, DanceMove> = {
   spin: { id: 'spin', label: 'Spin', emoji: '💫', basePoints: 18, duration: 2000 },
 };
 
-// ─── Physics Objects ──────────────────────────────────────────────────────────
+// ─── Rhythm / Tap Zones ───────────────────────────────────────────────────────
 
-export type PhysicsObjectType =
-  | 'beachball'
-  | 'anvil'
-  | 'duck'
-  | 'pillows'
-  | 'taco'
-  | 'watermelon'
-  | 'bowling'
-  | 'feather';
+export type TapZone =
+  | 'upper-left'    // left arm
+  | 'upper-center'  // head / torso
+  | 'upper-right'   // right arm
+  | 'lower-left'    // left leg
+  | 'lower-center'  // both legs
+  | 'lower-right';  // right leg
 
-export interface PhysicsObjectDef {
-  type: PhysicsObjectType;
-  label: string;
-  emoji: string;
-  radius: number;
-  mass: number;
-  restitution: number; // bounciness
-  friction: number;
-  color: string;
-  comboBonus: number;
-}
+export type HitRating = 'perfect' | 'good' | 'miss';
 
-export const PHYSICS_OBJECTS: Record<PhysicsObjectType, PhysicsObjectDef> = {
-  beachball: {
-    type: 'beachball',
-    label: 'Beach Ball',
-    emoji: '🏖️',
-    radius: 28,
-    mass: 1,
-    restitution: 0.9,
-    friction: 0.05,
-    color: '#FF6B6B',
-    comboBonus: 5,
-  },
-  anvil: {
-    type: 'anvil',
-    label: 'Anvil',
-    emoji: '⚒️',
-    radius: 22,
-    mass: 20,
-    restitution: 0.05,
-    friction: 0.8,
-    color: '#555555',
-    comboBonus: 25,
-  },
-  duck: {
-    type: 'duck',
-    label: 'Rubber Duck',
-    emoji: '🦆',
-    radius: 20,
-    mass: 0.5,
-    restitution: 0.7,
-    friction: 0.1,
-    color: '#FFD93D',
-    comboBonus: 15,
-  },
-  pillows: {
-    type: 'pillows',
-    label: 'Pillows',
-    emoji: '🛏️',
-    radius: 32,
-    mass: 2,
-    restitution: 0.4,
-    friction: 0.5,
-    color: '#E8D5F5',
-    comboBonus: 8,
-  },
-  taco: {
-    type: 'taco',
-    label: 'Giant Taco',
-    emoji: '🌮',
-    radius: 26,
-    mass: 3,
-    restitution: 0.3,
-    friction: 0.6,
-    color: '#F4A261',
-    comboBonus: 20,
-  },
-  watermelon: {
-    type: 'watermelon',
-    label: 'Watermelon',
-    emoji: '🍉',
-    radius: 30,
-    mass: 4,
-    restitution: 0.2,
-    friction: 0.4,
-    color: '#6BCB77',
-    comboBonus: 18,
-  },
-  bowling: {
-    type: 'bowling',
-    label: 'Bowling Ball',
-    emoji: '🎳',
-    radius: 24,
-    mass: 15,
-    restitution: 0.1,
-    friction: 0.7,
-    color: '#333366',
-    comboBonus: 22,
-  },
-  feather: {
-    type: 'feather',
-    label: 'Feather',
-    emoji: '🪶',
-    radius: 10,
-    mass: 0.1,
-    restitution: 0.3,
-    friction: 0.9,
-    color: '#FFCFEF',
-    comboBonus: 3,
-  },
-};
+export type StageEffectType = 'spotlight' | 'discoBall' | 'hypeTrain' | 'confetti';
 
 // ─── Scoring ──────────────────────────────────────────────────────────────────
 
@@ -191,9 +90,12 @@ export interface ScoreState {
   lastMoveId: DanceMoveId | null;
   consecutiveDifferentMoves: number;
   sessionStart: number;
-  objectsDropped: number;
-  collisionsCount: number;
-  isGrounded: boolean; // character standing, not "fallen"
+  // Rhythm stats
+  perfectHits: number;
+  goodHits: number;
+  totalHitAttempts: number;
+  consecutivePerfects: number;
+  isGrounded: boolean;
 }
 
 export interface ScoreEntry {
@@ -204,8 +106,9 @@ export interface ScoreEntry {
   displayName?: string;
   createdAt?: string;
   metadata?: {
-    objectsDropped: number;
-    collisions: number;
+    perfectHits: number;
+    goodHits: number;
+    totalHits: number;
     comboPeak: number;
     duration: number;
   };
@@ -221,12 +124,10 @@ export interface DailyChallenge {
 }
 
 export interface ChallengeCondition {
-  type: 'drop_object' | 'dance_move' | 'combo' | 'score';
-  objectType?: PhysicsObjectType;
+  type: 'hit_streak' | 'dance_move' | 'combo' | 'score';
   moveId?: DanceMoveId;
   count?: number;
   targetScore?: number;
-  whileDancing?: DanceMoveId;
 }
 
 // ─── Player Profile ───────────────────────────────────────────────────────────
@@ -267,16 +168,17 @@ export interface SavedOutfit {
 // ─── Events ──────────────────────────────────────────────────────────────────
 
 export type GameEventType =
-  | 'collision'
+  | 'rhythm_hit'
+  | 'rhythm_miss'
+  | 'beat'
   | 'dance_start'
   | 'dance_end'
   | 'score_update'
   | 'screen_change'
   | 'customization_change'
-  | 'object_drop'
-  | 'object_despawn'
   | 'challenge_complete'
-  | 'high_score';
+  | 'high_score'
+  | 'stage_effect';
 
 export interface GameEvent<T = unknown> {
   type: GameEventType;

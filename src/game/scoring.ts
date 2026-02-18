@@ -1,10 +1,10 @@
 import {
   ScoreState,
   DanceMoveId,
-  PhysicsObjectType,
+  HitRating,
+  TapZone,
   DailyChallenge,
   ChallengeCondition,
-  PHYSICS_OBJECTS,
 } from '@/types';
 
 // ─── Score State Factory ──────────────────────────────────────────────────────
@@ -18,184 +18,106 @@ export function createScoreState(): ScoreState {
     lastMoveId: null,
     consecutiveDifferentMoves: 0,
     sessionStart: Date.now(),
-    objectsDropped: 0,
-    collisionsCount: 0,
+    perfectHits: 0,
+    goodHits: 0,
+    totalHitAttempts: 0,
+    consecutivePerfects: 0,
     isGrounded: true,
   };
 }
 
-// ─── Score Calculations ───────────────────────────────────────────────────────
+// ─── Rhythm Scoring ───────────────────────────────────────────────────────────
 
-const HYPE_PER_SECOND: Record<DanceMoveId, number> = {
-  idle: 0,
-  wiggle: 10,
-  robot: 15,
-  worm: 20,
-  flail: 12,
-  spin: 18,
-};
-
-const COLLISION_REACTIONS: Record<string, { emoji: string; points: number; direction: 'left' | 'right' | 'up' }[]> = {
-  beachball: [
-    { emoji: '🏐💥', points: 50, direction: 'up' },
-    { emoji: '🌊😂', points: 40, direction: 'right' },
-  ],
-  anvil: [
-    { emoji: '💀😵', points: 150, direction: 'up' },
-    { emoji: '⚡😤', points: 120, direction: 'left' },
-  ],
-  duck: [
-    { emoji: '🦆🎵', points: 80, direction: 'right' },
-    { emoji: '😂quack', points: 70, direction: 'up' },
-  ],
-  pillows: [
-    { emoji: '💤😌', points: 40, direction: 'up' },
-    { emoji: '🛌💫', points: 45, direction: 'left' },
-  ],
-  taco: [
-    { emoji: '🌮😋', points: 90, direction: 'right' },
-    { emoji: '💃🌮', points: 100, direction: 'up' },
-  ],
-  watermelon: [
-    { emoji: '🍉💥', points: 85, direction: 'up' },
-    { emoji: '😲🍉', points: 75, direction: 'left' },
-  ],
-  bowling: [
-    { emoji: '🎳STRIKE!', points: 130, direction: 'left' },
-    { emoji: '😱🎳', points: 110, direction: 'right' },
-  ],
-  feather: [
-    { emoji: '🪶😄', points: 20, direction: 'up' },
-    { emoji: '🤭hehe', points: 15, direction: 'right' },
-  ],
-};
-
-export interface CollisionResult {
-  points: number;
-  emoji: string;
-  wobbleIntensity: number;
-  direction: 'left' | 'right' | 'up';
+export interface RhythmHitResult {
+  rating: HitRating;
+  zone: TapZone;
+  targetId: number;
 }
 
-export function calculateCollisionResult(
-  objectType: PhysicsObjectType,
-  score: ScoreState
-): CollisionResult {
-  const reactions = COLLISION_REACTIONS[objectType] ?? [{ emoji: '💥', points: 50, direction: 'up' as const }];
-  const reaction = reactions[Math.floor(Math.random() * reactions.length)];
-  const def = PHYSICS_OBJECTS[objectType];
-
-  const multiplier = score.comboMultiplier;
-  const points = Math.round((reaction.points + def.comboBonus) * multiplier);
-  const wobbleIntensity = def.mass * 0.15 + 0.5;
-
-  return {
-    points,
-    emoji: reaction.emoji,
-    wobbleIntensity: Math.min(wobbleIntensity, 2.5),
-    direction: reaction.direction,
-  };
-}
-
-// ─── Score Updater ────────────────────────────────────────────────────────────
-
-export function tickScore(score: ScoreState, dt: number, currentMove: DanceMoveId): void {
-  if (!score.isGrounded) return;
-
-  // Hype accumulates while dancing
-  const hypeRate = HYPE_PER_SECOND[currentMove];
-  if (hypeRate > 0) {
-    score.crowdHype += hypeRate * dt * score.comboMultiplier;
-    score.totalScore = Math.floor(score.crowdHype);
-  }
-
-  // Combo decays if idle too long
-  if (currentMove === 'idle') {
-    score.comboMultiplier = Math.max(1, score.comboMultiplier - dt * 0.2);
-    score.combo = Math.max(0, score.combo - 1);
-  }
-}
-
-export function registerCollision(
+/**
+ * Register a rhythm hit (or miss) and update score state.
+ * Returns the points awarded.
+ */
+export function registerRhythmHit(
   score: ScoreState,
-  objectType: PhysicsObjectType
-): CollisionResult {
-  score.collisionsCount++;
-  const result = calculateCollisionResult(objectType, score);
+  hit: RhythmHitResult
+): number {
+  score.totalHitAttempts++;
 
-  score.crowdHype += result.points;
+  if (hit.rating === 'miss') {
+    score.combo = 0;
+    score.consecutivePerfects = 0;
+    score.comboMultiplier = Math.max(1.0, score.comboMultiplier - 0.5);
+    score.totalScore = Math.floor(score.crowdHype);
+    return 0;
+  }
+
+  const base = hit.rating === 'perfect' ? 300 : 100;
+  const points = Math.round(base * score.comboMultiplier);
+
+  score.crowdHype += points;
   score.totalScore = Math.floor(score.crowdHype);
-
-  // Increase combo
   score.combo++;
-  score.comboMultiplier = Math.min(5, 1 + score.combo * 0.25);
+  score.comboMultiplier = Math.min(5.0, 1.0 + score.combo * 0.25);
 
-  return result;
+  if (hit.rating === 'perfect') {
+    score.perfectHits++;
+    score.consecutivePerfects++;
+  } else {
+    score.goodHits++;
+    score.consecutivePerfects = 0;
+  }
+
+  return points;
 }
 
-export function registerDanceMove(score: ScoreState, move: DanceMoveId): void {
-  if (move === 'idle') {
-    score.consecutiveDifferentMoves = 0;
-    return;
-  }
+/**
+ * Accuracy bonus awarded at end of session.
+ */
+export function calculateSessionBonus(score: ScoreState): number {
+  if (score.totalHitAttempts === 0) return 0;
+  const ratio = score.perfectHits / score.totalHitAttempts;
+  return Math.round(ratio * 500);
+}
 
-  if (move !== score.lastMoveId) {
-    score.consecutiveDifferentMoves++;
-    // Bonus for variety
-    if (score.consecutiveDifferentMoves >= 3) {
-      score.crowdHype += 50;
-      score.comboMultiplier = Math.min(5, score.comboMultiplier + 0.25);
-    }
-  }
+// ─── Score Tick (combo decay only) ────────────────────────────────────────────
 
-  score.lastMoveId = move;
+export function tickScore(score: ScoreState, dt: number, _currentMove: DanceMoveId): void {
+  // Gently decay combo multiplier when no hits are landing
+  if (score.combo === 0) {
+    score.comboMultiplier = Math.max(1.0, score.comboMultiplier - dt * 0.1);
+  }
 }
 
 // ─── Daily Challenge Generator ────────────────────────────────────────────────
 
-/**
- * Deterministically generates a daily challenge from the date string.
- * No randomness that changes between runs on the same day.
- */
 export function generateDailyChallenge(dateStr: string): DailyChallenge {
-  // Simple hash of the date
   let hash = 0;
   for (let i = 0; i < dateStr.length; i++) {
     hash = ((hash << 5) - hash + dateStr.charCodeAt(i)) | 0;
   }
   hash = Math.abs(hash);
 
-  const objectTypes: PhysicsObjectType[] = ['duck', 'anvil', 'beachball', 'taco', 'watermelon', 'bowling', 'feather', 'pillows'];
-  const danceMoves: DanceMoveId[] = ['robot', 'worm', 'wiggle', 'flail', 'spin'];
-
-  const objectType = objectTypes[hash % objectTypes.length];
-  const danceMove = danceMoves[(hash >> 4) % danceMoves.length];
-  const count = 3 + (hash % 5); // 3-7 objects
+  const streakCount = 5 + (hash % 8); // 5-12 consecutive perfects
 
   const conditions: ChallengeCondition[] = [
     {
-      type: 'drop_object',
-      objectType,
-      count,
-      whileDancing: danceMove,
+      type: 'hit_streak',
+      count: streakCount,
     },
   ];
 
-  // Second condition: score target
   const scoreTarget = (2 + (hash % 8)) * 500;
   conditions.push({
     type: 'score',
     targetScore: scoreTarget,
   });
 
-  const objectDef = PHYSICS_OBJECTS[objectType];
-  const moveName = danceMove.charAt(0).toUpperCase() + danceMove.slice(1);
-
   return {
     date: dateStr,
-    description: `Drop ${count} ${objectDef.emoji} ${objectDef.label}s while doing the ${moveName}! Score ${scoreTarget}+ Hype.`,
+    description: `Land ${streakCount} perfect hits in a row! Score ${scoreTarget}+ Hype.`,
     conditions,
-    rewardPoints: 500 + count * 100,
+    rewardPoints: 500 + streakCount * 100,
   };
 }
 
@@ -207,7 +129,8 @@ export function getTodayDateStr(): string {
 
 export interface ChallengeProgress {
   challenge: DailyChallenge;
-  dropsWhileDancing: number;
+  consecutivePerfects: number;
+  bestStreak: number;
   scoreReached: boolean;
   completed: boolean;
 }
@@ -215,7 +138,8 @@ export interface ChallengeProgress {
 export function createChallengeProgress(challenge: DailyChallenge): ChallengeProgress {
   return {
     challenge,
-    dropsWhileDancing: 0,
+    consecutivePerfects: 0,
+    bestStreak: 0,
     scoreReached: false,
     completed: false,
   };
@@ -224,39 +148,51 @@ export function createChallengeProgress(challenge: DailyChallenge): ChallengePro
 export function updateChallengeProgress(
   progress: ChallengeProgress,
   score: ScoreState,
-  currentMove: DanceMoveId,
-  droppedObject?: PhysicsObjectType
+  rating?: HitRating
 ): void {
   if (progress.completed) return;
 
   const conds = progress.challenge.conditions;
 
-  for (const cond of conds) {
-    if (cond.type === 'drop_object' && droppedObject) {
-      if (
-        droppedObject === cond.objectType &&
-        cond.whileDancing &&
-        currentMove === cond.whileDancing
-      ) {
-        progress.dropsWhileDancing++;
-      }
+  // Track perfect streak
+  if (rating === 'perfect') {
+    progress.consecutivePerfects++;
+    if (progress.consecutivePerfects > progress.bestStreak) {
+      progress.bestStreak = progress.consecutivePerfects;
     }
+  } else if (rating === 'miss' || rating === 'good') {
+    progress.consecutivePerfects = 0;
+  }
 
-    if (cond.type === 'score' && cond.targetScore) {
-      if (score.totalScore >= cond.targetScore) {
-        progress.scoreReached = true;
-      }
+  // Check score condition
+  for (const cond of conds) {
+    if (cond.type === 'score' && cond.targetScore && score.totalScore >= cond.targetScore) {
+      progress.scoreReached = true;
     }
   }
 
   // Check completion
-  const dropCond = conds.find(c => c.type === 'drop_object');
+  const streakCond = conds.find(c => c.type === 'hit_streak');
   const scoreCond = conds.find(c => c.type === 'score');
 
-  const dropDone = !dropCond || progress.dropsWhileDancing >= (dropCond.count ?? 1);
+  const streakDone = !streakCond || progress.bestStreak >= (streakCond.count ?? 1);
   const scoreDone = !scoreCond || progress.scoreReached;
 
-  if (dropDone && scoreDone) {
+  if (streakDone && scoreDone) {
     progress.completed = true;
   }
+}
+
+// ─── Legacy / Compat ──────────────────────────────────────────────────────────
+
+export function registerDanceMove(score: ScoreState, move: DanceMoveId): void {
+  if (move === 'idle') {
+    score.consecutiveDifferentMoves = 0;
+    score.lastMoveId = null;
+    return;
+  }
+  if (move !== score.lastMoveId) {
+    score.consecutiveDifferentMoves++;
+  }
+  score.lastMoveId = move;
 }
