@@ -722,7 +722,7 @@ export class Character {
     lower.rotation = upperAngle + lowerAngle;
 
     if (foot) {
-      const footAngle = upper.rotation + lower.rotation;
+      const footAngle = lower.rotation;
       const footX = elbowX + Math.sin(footAngle) * lowerLen;
       const footY = elbowY + Math.cos(footAngle) * lowerLen;
       foot.position.set(footX, footY);

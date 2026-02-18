@@ -84,6 +84,7 @@ export function createDanceScreen(
   const today = getTodayDateStr();
   const challenge = generateDailyChallenge(today);
   let challengeProgress: ChallengeProgress | null = null;
+  let challengeRewarded = false;
 
   dataService.getChallengeCompletion(state.profile.id, today).then(done => {
     if (!done) {
@@ -180,12 +181,16 @@ export function createDanceScreen(
       const total = cond.count ?? 1;
       challengeText.textContent = `${challenge.description} (${done}/${total})`;
     }
-    if (challengeProgress.completed) {
+    if (challengeProgress.completed && !challengeRewarded) {
+      challengeRewarded = true;
       challengeText.textContent = '🎉 Challenge Complete! Bonus: ' + challenge.rewardPoints + ' Hype!';
       challengeIcon.textContent = '🏆';
       scoreState.crowdHype += challenge.rewardPoints;
       soundSystem.playChallengeComplete();
       haptic('heavy');
+    } else if (challengeProgress.completed) {
+      challengeText.textContent = '🎉 Challenge Complete! Bonus: ' + challenge.rewardPoints + ' Hype!';
+      challengeIcon.textContent = '🏆';
     }
   }
 
