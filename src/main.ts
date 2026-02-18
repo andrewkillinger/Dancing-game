@@ -1,7 +1,7 @@
 import '@/styles/global.css';
 import { GameState, GameScreen, CustomizationData, DEFAULT_CUSTOMIZATION } from '@/types';
 import { createScoreState } from '@/game/scoring';
-import { engine, eventBus } from '@/game/engine';
+import { engine } from '@/game/engine';
 import { soundSystem } from '@/game/sounds';
 import { authService } from '@/services/supabase/auth';
 import { createHomeScreen } from '@/ui/screens/home';
@@ -51,7 +51,8 @@ const canvasContainer = document.getElementById('game-canvas-container') as HTML
 
 let currentScreenEl: HTMLElement | null = null;
 let danceCleanup: (() => void) | null = null;
-let currentScreen: GameScreen = 'home';
+// Use null so the first navigate('home') call is never short-circuited
+let currentScreen: GameScreen | null = null;
 
 async function navigate(screen: GameScreen): Promise<void> {
   if (currentScreen === screen) return;
@@ -68,7 +69,7 @@ async function navigate(screen: GameScreen): Promise<void> {
     currentScreenEl = null;
   }
 
-  currentScreen = screen;
+  currentScreen = screen as GameScreen;
   initialState.screen = screen;
 
   // Show/hide canvas
@@ -134,7 +135,7 @@ async function navigate(screen: GameScreen): Promise<void> {
     initialState.isPlaying = false;
   }
 
-  eventBus.emit('screen_change', { screen });
+  // (screen_change event omitted – no active subscribers in current build)
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -142,37 +143,41 @@ async function navigate(screen: GameScreen): Promise<void> {
 async function init(): Promise<void> {
   setLoadingProgress(10);
 
-  // Init auth
+  // Init auth (always resolves – falls back to guest on any error)
   try {
     const profile = await authService.init();
     initialState.profile = profile;
-    setLoadingProgress(35);
   } catch (err) {
     console.warn('[App] Auth init failed, using guest mode:', err);
-    setLoadingProgress(35);
   }
+  setLoadingProgress(35);
 
   // Init game engine
+  let engineReady = false;
   try {
     await engine.init(canvasContainer, initialState);
+    engineReady = true;
     setLoadingProgress(70);
   } catch (err) {
     console.error('[App] Engine init failed:', err);
+    setLoadingProgress(70);
   }
 
-  // Start engine loop
-  engine.start();
+  // Start engine loop only if engine initialized successfully
+  if (engineReady) {
+    engine.start();
+  }
   setLoadingProgress(90);
 
-  // Show home screen
+  // Show home screen – canvas hidden on non-dance screens
   canvasContainer.style.visibility = 'hidden';
   await navigate('home');
   setLoadingProgress(100);
 
-  // Hide loading
+  // Hide loading screen
   setTimeout(hideLoading, 300);
 
-  // Audio: unlock on first interaction
+  // Unlock audio on first user gesture (mobile autoplay policy)
   const unlockAudio = (): void => {
     if (initialState.audioEnabled) {
       soundSystem.init();
@@ -184,14 +189,14 @@ async function init(): Promise<void> {
   document.addEventListener('touchstart', unlockAudio, { passive: true });
   document.addEventListener('click', unlockAudio, { passive: true });
 
-  // Handle orientation changes
-  window.addEventListener('orientationchange', () => {
-    setTimeout(() => {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      engine.app.renderer.resize(w, h);
-    }, 200);
-  });
+  // Handle orientation changes safely
+  if (engineReady) {
+    window.addEventListener('orientationchange', () => {
+      setTimeout(() => {
+        engine.app.renderer.resize(window.innerWidth, window.innerHeight);
+      }, 200);
+    });
+  }
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
