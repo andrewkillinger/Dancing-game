@@ -140,9 +140,107 @@ export interface PlayerProfile {
   isGuest: boolean;
 }
 
+// ─── Music / Songs ────────────────────────────────────────────────────────────
+
+export type MusicStyle = 'pop' | 'hiphop' | 'electronic' | 'latin';
+export type DifficultyLevel = 'easy' | 'medium' | 'hard';
+
+export interface SongDefinition {
+  id: string;
+  name: string;
+  emoji: string;
+  bpm: number;
+  style: MusicStyle;
+  difficulty: DifficultyLevel;
+  barCount: number;         // number of bars in the round
+  durationSec: number;      // approximate display duration
+  beatPattern: TapZone[][]; // per-beat zone list; length = beats per bar
+}
+
+export const SONGS: SongDefinition[] = [
+  {
+    id: 'wobble-pop',
+    name: 'Wobble Pop',
+    emoji: '🎵',
+    bpm: 120,
+    style: 'pop',
+    difficulty: 'medium',
+    barCount: 12,
+    durationSec: 48,
+    beatPattern: [
+      ['upper-left'],                         // beat 0
+      ['upper-right'],                        // beat 1
+      ['lower-left'],                         // beat 2
+      ['lower-right'],                        // beat 3
+      ['upper-center'],                       // beat 4
+      ['upper-left', 'upper-right'],          // beat 5 — double
+      ['lower-center'],                       // beat 6
+      [],                                     // beat 7 — rest
+    ],
+  },
+  {
+    id: 'easy-groove',
+    name: 'Easy Groove',
+    emoji: '🎸',
+    bpm: 88,
+    style: 'hiphop',
+    difficulty: 'easy',
+    barCount: 8,
+    durationSec: 44,
+    beatPattern: [
+      ['upper-left'],   // beat 0
+      [],               // beat 1 — rest
+      ['upper-right'],  // beat 2
+      [],               // beat 3 — rest
+    ],
+  },
+  {
+    id: 'electric-surge',
+    name: 'Electric Surge',
+    emoji: '⚡',
+    bpm: 145,
+    style: 'electronic',
+    difficulty: 'hard',
+    barCount: 14,
+    durationSec: 46,
+    beatPattern: [
+      ['upper-left', 'lower-right'],          // beat 0
+      ['upper-right'],                        // beat 1
+      ['lower-left', 'upper-center'],         // beat 2
+      ['lower-right'],                        // beat 3
+      ['upper-left', 'upper-right'],          // beat 4 — double
+      ['lower-center'],                       // beat 5
+      ['upper-center', 'lower-left'],         // beat 6
+      ['upper-right', 'lower-right'],         // beat 7
+    ],
+  },
+  {
+    id: 'salsa-night',
+    name: 'Salsa Night',
+    emoji: '🌶️',
+    bpm: 108,
+    style: 'latin',
+    difficulty: 'medium',
+    barCount: 10,
+    durationSec: 44,
+    beatPattern: [
+      ['upper-center'],                       // beat 0
+      ['lower-left'],                         // beat 1
+      ['upper-right'],                        // beat 2
+      ['lower-center'],                       // beat 3
+      ['upper-left'],                         // beat 4
+      ['lower-right'],                        // beat 5
+      ['upper-center', 'lower-left'],         // beat 6 — double
+      [],                                     // beat 7 — rest
+    ],
+  },
+];
+
+export const DEFAULT_SONG = SONGS[0];
+
 // ─── Game State ───────────────────────────────────────────────────────────────
 
-export type GameScreen = 'home' | 'customize' | 'dance' | 'leaderboard' | 'locker';
+export type GameScreen = 'home' | 'customize' | 'dance' | 'leaderboard' | 'locker' | 'song-select';
 
 export interface GameState {
   screen: GameScreen;
@@ -154,6 +252,7 @@ export interface GameState {
   reducedMotion: boolean;
   fps: number;
   quality: 'high' | 'medium' | 'low';
+  selectedSong: SongDefinition;
 }
 
 // ─── Outfit / Locker ──────────────────────────────────────────────────────────

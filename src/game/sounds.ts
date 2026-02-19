@@ -1,7 +1,70 @@
 // ─── Web Audio Sound System ───────────────────────────────────────────────────
 // All sounds are synthesized via Web Audio API - no external files required.
 
+import { MusicStyle } from '@/types';
+
 type WaveType = OscillatorType;
+
+// ─── Drum Pattern Data ────────────────────────────────────────────────────────
+
+interface DrumEvent {
+  type: 'kick' | 'snare' | 'hihat' | 'openhat';
+  offset: 0 | 0.5;  // 0 = on the beat, 0.5 = 8th-note half-beat
+  gain?: number;
+}
+
+type DrumPattern = DrumEvent[][];  // indexed by beatIndex % 4
+
+const DRUM_PATTERNS: Record<MusicStyle, DrumPattern> = {
+  pop: [
+    // beat 0: kick + hihat + 8th hihat
+    [{ type: 'kick', offset: 0 }, { type: 'hihat', offset: 0 }, { type: 'hihat', offset: 0.5, gain: 0.07 }],
+    // beat 1: snare + hihat
+    [{ type: 'snare', offset: 0 }, { type: 'hihat', offset: 0 }],
+    // beat 2: kick + hihat + 8th hihat
+    [{ type: 'kick', offset: 0 }, { type: 'hihat', offset: 0 }, { type: 'hihat', offset: 0.5, gain: 0.07 }],
+    // beat 3: snare + hihat
+    [{ type: 'snare', offset: 0 }, { type: 'hihat', offset: 0 }],
+  ],
+  hiphop: [
+    // beat 0: heavy kick + sparse hihat
+    [{ type: 'kick', offset: 0, gain: 0.8 }, { type: 'hihat', offset: 0, gain: 0.08 }],
+    // beat 1: openhat off-beat + half-beat kick (syncopation)
+    [{ type: 'openhat', offset: 0 }, { type: 'kick', offset: 0.5, gain: 0.5 }],
+    // beat 2: heavy snare
+    [{ type: 'snare', offset: 0, gain: 0.5 }, { type: 'hihat', offset: 0.5, gain: 0.06 }],
+    // beat 3: light hihat
+    [{ type: 'hihat', offset: 0, gain: 0.08 }],
+  ],
+  electronic: [
+    // beat 0: kick + 8th hihats
+    [{ type: 'kick', offset: 0 }, { type: 'hihat', offset: 0 }, { type: 'hihat', offset: 0.5, gain: 0.1 }],
+    // beat 1: kick + 8th hihats
+    [{ type: 'kick', offset: 0, gain: 0.45 }, { type: 'hihat', offset: 0 }, { type: 'hihat', offset: 0.5, gain: 0.1 }],
+    // beat 2: kick + snare + openhat + 8th hihats
+    [{ type: 'kick', offset: 0 }, { type: 'snare', offset: 0 }, { type: 'openhat', offset: 0.5 }, { type: 'hihat', offset: 0 }],
+    // beat 3: kick + 8th hihats
+    [{ type: 'kick', offset: 0, gain: 0.45 }, { type: 'hihat', offset: 0 }, { type: 'hihat', offset: 0.5, gain: 0.1 }],
+  ],
+  latin: [
+    // beat 0: kick + multiple 8th hihats
+    [{ type: 'kick', offset: 0 }, { type: 'hihat', offset: 0 }, { type: 'hihat', offset: 0.5, gain: 0.09 }],
+    // beat 1: kick + openhat off-beat
+    [{ type: 'kick', offset: 0, gain: 0.4 }, { type: 'openhat', offset: 0.5, gain: 0.14 }],
+    // beat 2: snare + hihat
+    [{ type: 'snare', offset: 0 }, { type: 'hihat', offset: 0 }, { type: 'hihat', offset: 0.5, gain: 0.09 }],
+    // beat 3: openhat + hihat off-beat
+    [{ type: 'openhat', offset: 0, gain: 0.12 }, { type: 'hihat', offset: 0.5, gain: 0.09 }],
+  ],
+};
+
+// Bass note cycles (Hz) — 4 notes cycling per bar
+const BASS_CYCLES: Record<MusicStyle, [number, number, number, number]> = {
+  pop:        [130.8, 146.8, 164.8, 146.8],  // C2 D2 E2 D2
+  hiphop:     [65.4,  65.4,  87.3,  73.4],   // C1 C1 F1 D1
+  electronic: [110,   138.6, 110,   164.8],   // A2 C#3 A2 E3
+  latin:      [130.8, 155.6, 174.6, 155.6],   // C2 G2 F2 G2
+};
 
 // ─── Beat Engine (Chris Wilson lookahead scheduler) ───────────────────────────
 
@@ -9,18 +72,21 @@ class BeatEngine {
   private ctx: AudioContext;
   private master: GainNode;
   private bpm: number;
+  private style: MusicStyle;
   private secPerBeat: number;
   private nextBeatTime = 0;
   private beatCount = 0;
+  private bassIndex = 0;
   private readonly SCHEDULE_AHEAD = 0.1;  // seconds lookahead
   private readonly INTERVAL_MS = 25;       // polling rate
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private beatCallbacks: Array<(beatNum: number, beatTime: number) => void> = [];
 
-  constructor(ctx: AudioContext, master: GainNode, bpm: number) {
+  constructor(ctx: AudioContext, master: GainNode, bpm: number, style: MusicStyle) {
     this.ctx = ctx;
     this.master = master;
     this.bpm = bpm;
+    this.style = style;
     this.secPerBeat = 60.0 / bpm;
   }
 
@@ -53,23 +119,35 @@ class BeatEngine {
       // Notify listeners with the exact audio-clock beat time
       this.beatCallbacks.forEach(cb => cb(n, t));
 
-      // Drum pattern: kick=1, snare=3, hihat=every beat
-      this.playHihat(t);
-      if (beatIndex === 0) this.playKick(t);
-      if (beatIndex === 2) this.playSnare(t);
+      // Per-style drum pattern (may include 8th-note sub-events)
+      const events = DRUM_PATTERNS[this.style][beatIndex];
+      for (const ev of events) {
+        const evTime = t + ev.offset * this.secPerBeat;
+        if (ev.type === 'kick')    this.playKick(evTime, ev.gain);
+        if (ev.type === 'snare')   this.playSnare(evTime, ev.gain);
+        if (ev.type === 'hihat')   this.playHihat(evTime, ev.gain);
+        if (ev.type === 'openhat') this.playOpenHat(evTime, ev.gain);
+      }
+
+      // Bass note on every downbeat (beat 0 of each 4-beat bar), cycling
+      if (beatIndex === 0) {
+        const freq = BASS_CYCLES[this.style][this.bassIndex % 4];
+        this.playBass(freq, t);
+        this.bassIndex++;
+      }
 
       this.nextBeatTime += this.secPerBeat;
       this.beatCount++;
     }
   }
 
-  private playKick(time: number): void {
+  private playKick(time: number, gainOverride?: number): void {
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(150, time);
     osc.frequency.exponentialRampToValueAtTime(50, time + 0.15);
-    gain.gain.setValueAtTime(0.6, time);
+    gain.gain.setValueAtTime(gainOverride ?? 0.6, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
     osc.connect(gain);
     gain.connect(this.master);
@@ -77,7 +155,7 @@ class BeatEngine {
     osc.stop(time + 0.22);
   }
 
-  private playSnare(time: number): void {
+  private playSnare(time: number, gainOverride?: number): void {
     const bufSize = Math.floor(this.ctx.sampleRate * 0.1);
     const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
     const data = buf.getChannelData(0);
@@ -91,7 +169,7 @@ class BeatEngine {
     filter.frequency.value = 2000;
 
     const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0.35, time);
+    gain.gain.setValueAtTime(gainOverride ?? 0.35, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.1);
 
     src.connect(filter);
@@ -104,7 +182,7 @@ class BeatEngine {
     const bodyGain = this.ctx.createGain();
     body.type = 'sine';
     body.frequency.setValueAtTime(200, time);
-    bodyGain.gain.setValueAtTime(0.25, time);
+    bodyGain.gain.setValueAtTime((gainOverride ?? 0.35) * 0.7, time);
     bodyGain.gain.exponentialRampToValueAtTime(0.001, time + 0.08);
     body.connect(bodyGain);
     bodyGain.connect(this.master);
@@ -112,7 +190,7 @@ class BeatEngine {
     body.stop(time + 0.1);
   }
 
-  private playHihat(time: number): void {
+  private playHihat(time: number, gainOverride?: number): void {
     const bufSize = Math.floor(this.ctx.sampleRate * 0.04);
     const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
     const data = buf.getChannelData(0);
@@ -126,13 +204,58 @@ class BeatEngine {
     filter.frequency.value = 8000;
 
     const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(0.12, time);
+    gain.gain.setValueAtTime(gainOverride ?? 0.12, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
 
     src.connect(filter);
     filter.connect(gain);
     gain.connect(this.master);
     src.start(time);
+  }
+
+  private playOpenHat(time: number, gainOverride?: number): void {
+    const bufSize = Math.floor(this.ctx.sampleRate * 0.15);
+    const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 5000;
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(gainOverride ?? 0.18, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.15);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    src.start(time);
+  }
+
+  private playBass(freq: number, time: number): void {
+    const osc = this.ctx.createOscillator();
+    const filter = this.ctx.createBiquadFilter();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, time);
+
+    filter.type = 'lowpass';
+    filter.frequency.value = 400;
+
+    const dur = this.secPerBeat * 0.85;
+    gain.gain.setValueAtTime(0.45, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + dur);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    osc.start(time);
+    osc.stop(time + dur + 0.02);
   }
 }
 
@@ -185,10 +308,10 @@ class SoundSystem {
 
   // ─── Beat Engine ─────────────────────────────────────────────────────────
 
-  startBeat(bpm: number): void {
+  startBeat(bpm: number, style: MusicStyle): void {
     if (!this.initialized || !this.ctx || !this.masterGain) return;
     this.beatEngine?.stop();
-    this.beatEngine = new BeatEngine(this.ctx, this.masterGain, bpm);
+    this.beatEngine = new BeatEngine(this.ctx, this.masterGain, bpm, style);
     this.beatEngine.start(this.ctx.currentTime + 0.1);
   }
 

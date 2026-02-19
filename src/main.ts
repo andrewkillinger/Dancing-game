@@ -1,5 +1,5 @@
 import '@/styles/global.css';
-import { GameState, GameScreen, CustomizationData, DEFAULT_CUSTOMIZATION } from '@/types';
+import { GameState, GameScreen, CustomizationData, DEFAULT_CUSTOMIZATION, DEFAULT_SONG } from '@/types';
 import { createScoreState } from '@/game/scoring';
 import { engine } from '@/game/engine';
 import { soundSystem } from '@/game/sounds';
@@ -9,6 +9,7 @@ import { createCustomizeScreen } from '@/ui/screens/customize';
 import { createDanceScreen } from '@/ui/screens/dance';
 import { createLeaderboardScreen } from '@/ui/screens/leaderboard';
 import { createLockerScreen } from '@/ui/screens/locker';
+import { createSongSelectScreen } from '@/ui/screens/song-select';
 
 // ─── Loading Progress ─────────────────────────────────────────────────────────
 
@@ -42,6 +43,7 @@ const initialState: GameState = {
   reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   fps: 60,
   quality: 'high',
+  selectedSong: DEFAULT_SONG,
 };
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -114,6 +116,10 @@ async function navigate(screen: GameScreen): Promise<void> {
           initialState.profile.customization = cust;
         }
       );
+      break;
+
+    case 'song-select':
+      el = createSongSelectScreen(initialState, navigate);
       break;
 
     default:

@@ -16,19 +16,6 @@ const ZONE_COLORS: Record<string, number> = {
   right:  0x6BCB77,
 };
 
-// ─── Spawn pattern over an 8-beat bar ────────────────────────────────────────
-
-interface SpawnEntry { zone: TapZone }
-const BEAT_PATTERN: Array<SpawnEntry[]> = [
-  [{ zone: 'upper-left' }],               // beat 0
-  [{ zone: 'upper-right' }],              // beat 1
-  [{ zone: 'lower-left' }],              // beat 2
-  [{ zone: 'lower-right' }],             // beat 3
-  [{ zone: 'upper-center' }],            // beat 4
-  [{ zone: 'upper-left' }, { zone: 'upper-right' }], // beat 5 – double
-  [{ zone: 'lower-center' }],            // beat 6
-  [],                                    // beat 7 – rest
-];
 
 // ─── RhythmTarget ─────────────────────────────────────────────────────────────
 
@@ -58,6 +45,7 @@ export class RhythmEngine {
   private railY: number;
   private bpm: number;
   private secPerBeat: number;
+  private beatPattern: TapZone[][];
 
   private targets: RhythmTarget[] = [];
   private idCounter = 0;
@@ -69,11 +57,12 @@ export class RhythmEngine {
   // Hit rail graphics (drawn once)
   private railGfx: PIXI.Graphics;
 
-  constructor(layer: PIXI.Container, canvasW: number, canvasH: number, bpm: number) {
+  constructor(layer: PIXI.Container, canvasW: number, canvasH: number, bpm: number, beatPattern: TapZone[][]) {
     this.layer = layer;
     this.canvasW = canvasW;
     this.canvasH = canvasH;
     this.bpm = bpm;
+    this.beatPattern = beatPattern;
     this.secPerBeat = 60 / bpm;
     this.railY = canvasH * 0.62;
 
@@ -111,10 +100,9 @@ export class RhythmEngine {
   /** Called by dance.ts when soundSystem.onBeat fires */
   onBeatFired(beatNum: number, beatTime: number): void {
     if (!this.running) return;
-    const patternIndex = beatNum % BEAT_PATTERN.length;
-    const entries = BEAT_PATTERN[patternIndex];
-    for (const entry of entries) {
-      this.spawnTarget(entry.zone, beatTime + TRAVEL_BEATS * this.secPerBeat);
+    const zones = this.beatPattern[beatNum % this.beatPattern.length];
+    for (const zone of zones) {
+      this.spawnTarget(zone, beatTime + TRAVEL_BEATS * this.secPerBeat);
     }
   }
 
