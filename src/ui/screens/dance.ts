@@ -20,9 +20,27 @@ import {
 import { soundSystem } from '@/game/sounds';
 import { dataService } from '@/services/supabase/data';
 
-// ─── Dance Screen ─────────────────────────────────────────────────────────────
+// ─── Grade helpers ────────────────────────────────────────────────────────────
 
-const BPM = 120;
+function computeGrade(accuracy: number): string {
+  if (accuracy >= 0.95) return 'S';
+  if (accuracy >= 0.85) return 'A';
+  if (accuracy >= 0.70) return 'B';
+  if (accuracy >= 0.50) return 'C';
+  return 'D';
+}
+
+function gradeColor(grade: string): string {
+  switch (grade) {
+    case 'S': return '#FFE66D';
+    case 'A': return '#6BCB77';
+    case 'B': return '#4D96FF';
+    case 'C': return '#FFA94D';
+    default:  return '#FF6B6B';
+  }
+}
+
+// ─── Dance Screen ─────────────────────────────────────────────────────────────
 
 export function createDanceScreen(
   state: GameState,
@@ -44,6 +62,10 @@ export function createDanceScreen(
   const { app } = gameEngine;
   const W = gameEngine.width;
   const H = gameEngine.height;
+
+  // Song
+  const song = state.selectedSong;
+  const BPM = song.bpm;
 
   // Stage layers
   const bgLayer = new PIXI.Container();
@@ -70,11 +92,18 @@ export function createDanceScreen(
   character.container.position.set(charX, charY);
   characterLayer.addChild(character.container);
 
-  // Rhythm engine
-  const rhythmEngine = new RhythmEngine(rhythmLayer, W, H, BPM);
+  // Rhythm engine — uses song's beat pattern
+  const rhythmEngine = new RhythmEngine(rhythmLayer, W, H, BPM, song.beatPattern);
 
   // Crowd manager
   const crowdMgr = new CrowdManager(crowdLayer, W, H);
+
+  // Round-end tracking
+  const TOTAL_BEATS = song.barCount * song.beatPattern.length;
+  let beatsScheduled = 0;
+  let roundEndTriggered = false;
+  let roundEndTimerId: ReturnType<typeof setTimeout> | null = null;
+  let peakCombo = 1.0;
 
   // Score state
   state.currentScore = createScoreState();
@@ -266,11 +295,18 @@ export function createDanceScreen(
       audioStarted = true;
       soundSystem.init();
       soundSystem.setEnabled(state.audioEnabled);
-      soundSystem.startBeat(BPM);
+      soundSystem.startBeat(BPM, song.style);
       rhythmEngine.start();
 
       beatUnsub = soundSystem.onBeat((beatNum, beatTime) => {
         rhythmEngine.onBeatFired(beatNum, beatTime);
+        beatsScheduled++;
+        if (beatsScheduled >= TOTAL_BEATS && !roundEndTriggered) {
+          roundEndTriggered = true;
+          const travelSec = 4 * (60 / BPM);
+          const delayMs = (travelSec + 0.5) * 1000;
+          roundEndTimerId = setTimeout(() => { void showResultsOverlay(); }, delayMs);
+        }
       });
 
       // Hide hint after first tap
@@ -288,6 +324,7 @@ export function createDanceScreen(
     if (hitResult) {
       // Scored rhythm hit
       const points = registerRhythmHit(scoreState, hitResult);
+      if (scoreState.comboMultiplier > peakCombo) peakCombo = scoreState.comboMultiplier;
       character.reactToZone(hitResult.zone, hitResult.rating);
       crowdMgr.onRhythmHit(hitResult.rating, scoreState.comboMultiplier);
 
@@ -402,6 +439,7 @@ export function createDanceScreen(
 
   cleanup.push(unsubUpdate);
   cleanup.push(() => {
+    if (roundEndTimerId !== null) clearTimeout(roundEndTimerId);
     if (beatUnsub) beatUnsub();
     soundSystem.stopBeat();
     rhythmEngine.destroy();
@@ -409,14 +447,8 @@ export function createDanceScreen(
     app.stage.removeChild(bgLayer, crowdLayer, characterLayer, rhythmLayer, fxLayer);
   });
 
-  // ── Session finish ─────────────────────────────────────────────────────────
-  async function finishSession(): Promise<void> {
-    const bonus = calculateSessionBonus(scoreState);
-    if (bonus > 0) {
-      scoreState.crowdHype += bonus;
-      scoreState.totalScore = Math.floor(scoreState.crowdHype);
-    }
-
+  // ── Score submission (shared by both exit paths) ───────────────────────────
+  async function submitScore(): Promise<void> {
     if (scoreState.totalScore <= 0) return;
 
     const entry = {
@@ -426,7 +458,7 @@ export function createDanceScreen(
         perfectHits: scoreState.perfectHits,
         goodHits: scoreState.goodHits,
         totalHits: scoreState.totalHitAttempts,
-        comboPeak: scoreState.comboMultiplier,
+        comboPeak: peakCombo,
         duration: Math.floor((Date.now() - scoreState.sessionStart) / 1000),
       },
     };
@@ -438,6 +470,131 @@ export function createDanceScreen(
         state.profile.id, today, challengeProgress, challenge
       );
     }
+  }
+
+  // ── Results overlay (shown at natural round end) ───────────────────────────
+  async function showResultsOverlay(): Promise<void> {
+    soundSystem.stopBeat();
+    rhythmEngine.stop();
+    soundSystem.playVictory();
+
+    // Apply session bonus
+    const bonus = calculateSessionBonus(scoreState);
+    if (bonus > 0) {
+      scoreState.crowdHype += bonus;
+      scoreState.totalScore = Math.floor(scoreState.crowdHype);
+    }
+
+    await submitScore();
+
+    const total = Math.max(1, scoreState.totalHitAttempts);
+    const accuracy = (scoreState.perfectHits + scoreState.goodHits) / total;
+    const grade = computeGrade(accuracy);
+    const misses = scoreState.totalHitAttempts - scoreState.perfectHits - scoreState.goodHits;
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = [
+      'position:absolute', 'inset:0', 'display:flex', 'flex-direction:column',
+      'align-items:center', 'justify-content:center',
+      'background:rgba(10,0,25,0.92)', 'padding:24px', 'box-sizing:border-box',
+      'z-index:100',
+    ].join(';');
+
+    // Song + grade header
+    const songHeader = document.createElement('div');
+    songHeader.textContent = `${song.emoji} ${song.name}`;
+    songHeader.style.cssText = 'font-size:18px;color:rgba(255,255,255,0.6);margin-bottom:8px;text-align:center;';
+
+    const gradeEl = document.createElement('div');
+    gradeEl.textContent = grade;
+    gradeEl.style.cssText = [
+      `font-size:clamp(80px,22vw,120px)`, 'font-weight:900', 'line-height:1',
+      `color:${gradeColor(grade)}`,
+      'text-shadow:0 0 40px currentColor',
+      'margin-bottom:12px',
+    ].join(';');
+
+    const accuracyEl = document.createElement('div');
+    accuracyEl.textContent = `${Math.round(accuracy * 100)}% accuracy`;
+    accuracyEl.style.cssText = 'font-size:20px;color:rgba(255,255,255,0.75);margin-bottom:24px;font-weight:700;';
+
+    // Stats grid
+    const grid = document.createElement('div');
+    grid.style.cssText = [
+      'display:grid', 'grid-template-columns:1fr 1fr', 'gap:10px',
+      'width:100%', 'max-width:320px', 'margin-bottom:28px',
+    ].join(';');
+
+    const stats: Array<[string, string]> = [
+      ['Perfect', String(scoreState.perfectHits)],
+      ['Good',    String(scoreState.goodHits)],
+      ['Miss',    String(misses)],
+      ['Peak ×',  peakCombo.toFixed(1)],
+      ['Bonus',   `+${bonus}`],
+      ['Score',   String(scoreState.totalScore)],
+    ];
+
+    for (const [label, value] of stats) {
+      const cell = document.createElement('div');
+      cell.style.cssText = [
+        'background:rgba(255,255,255,0.07)', 'border-radius:12px',
+        'padding:10px 14px', 'text-align:center',
+      ].join(';');
+      const valEl = document.createElement('div');
+      valEl.textContent = value;
+      valEl.style.cssText = 'font-size:22px;font-weight:900;color:#fff;';
+      const lblEl = document.createElement('div');
+      lblEl.textContent = label;
+      lblEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.45);font-weight:700;letter-spacing:1px;margin-top:2px;';
+      cell.append(valEl, lblEl);
+      grid.appendChild(cell);
+    }
+
+    // Buttons
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:12px;width:100%;max-width:320px;';
+
+    const againBtn = document.createElement('button');
+    againBtn.textContent = '▶️ Play Again';
+    againBtn.style.cssText = [
+      'flex:1', 'padding:16px', 'font-size:16px', 'font-weight:800',
+      'background:#6C3FF5', 'color:#fff', 'border:none', 'border-radius:14px',
+      'cursor:pointer', 'font-family:inherit',
+    ].join(';');
+    againBtn.addEventListener('pointerdown', () => {
+      haptic('medium');
+      navigate('song-select');
+    });
+
+    const homeBtn = document.createElement('button');
+    homeBtn.textContent = '🏠 Home';
+    homeBtn.style.cssText = [
+      'flex:1', 'padding:16px', 'font-size:16px', 'font-weight:800',
+      'background:rgba(255,255,255,0.1)', 'color:#fff', 'border:none', 'border-radius:14px',
+      'cursor:pointer', 'font-family:inherit',
+    ].join(';');
+    homeBtn.addEventListener('pointerdown', () => {
+      haptic('light');
+      navigate('home');
+    });
+
+    btnRow.append(againBtn, homeBtn);
+    overlay.append(songHeader, gradeEl, accuracyEl, grid, btnRow);
+    root.appendChild(overlay);
+  }
+
+  // ── Session finish (early exit via ✕ button) ───────────────────────────────
+  async function finishSession(): Promise<void> {
+    if (roundEndTriggered) return;  // round already ended normally
+    if (roundEndTimerId !== null) clearTimeout(roundEndTimerId);
+
+    const bonus = calculateSessionBonus(scoreState);
+    if (bonus > 0) {
+      scoreState.crowdHype += bonus;
+      scoreState.totalScore = Math.floor(scoreState.crowdHype);
+    }
+
+    await submitScore();
   }
 
   return {

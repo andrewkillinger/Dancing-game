@@ -48,7 +48,7 @@ export function createHomeScreen(
     margin: '0',
   });
 
-  const tagline = el('p', { textContent: 'Drop stuff. Dance hard. Wobble on! 💃' }, {
+  const tagline = el('p', { textContent: 'Tap the beat. Dance hard. Wobble on! 💃' }, {
     color: 'rgba(255,255,255,0.6)',
     fontSize: '15px',
     marginTop: '6px',
@@ -130,7 +130,7 @@ export function createHomeScreen(
 
   const playBtn = btn('▶️ Play!', () => {
     haptic('medium');
-    navigate('dance');
+    navigate('song-select');
   }, 'primary');
   playBtn.style.cssText += 'grid-column: 1 / -1; font-size: 22px; padding: 18px; min-height: 64px;';
 
