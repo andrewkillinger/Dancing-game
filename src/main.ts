@@ -39,7 +39,7 @@ const initialState: GameState = {
   currentScore: createScoreState(),
   activeMove: 'idle',
   isPlaying: false,
-  audioEnabled: false,
+  audioEnabled: true,
   reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   fps: 60,
   quality: 'high',
